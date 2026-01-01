@@ -1,0 +1,50 @@
+<?php
+
+namespace App\Policies;
+
+use App\Enums\Acl\Permission;
+use App\Facades\License;
+use App\Models\Album;
+use App\Models\User;
+use App\Repositories\AlbumRepository;
+
+class AlbumPolicy
+{
+    public function __construct(
+        private readonly AlbumRepository $albumRepository,
+    ) {}
+
+    public function access(User $user, Album $album): bool
+    {
+        return License::isCommunity() || $this->albumRepository->isAccessibleByUser($album, $user);
+    }
+
+    public function embed(User $user, Album $album): bool
+    {
+        return !$user->isGuest() && $this->access($user, $album);
+    }
+
+    /**
+     * If the user can update the album (e.g., edit name, year, or upload the cover image).
+     */
+    public function update(User $user, Album $album): bool
+    {
+        // Unknown albums are not editable.
+        if (!$album->is_standard) {
+            return false;
+        }
+
+        // For CE, if the user can manage songs, they can update any album.
+        if ($user->hasPermissionTo(Permission::MANAGE_SONGS) && License::isCommunity()) {
+            return true;
+        }
+
+        // For Plus, only the owner of the album can update it.
+        return $album->belongsToUser($user) && License::isPlus();
+    }
+
+    public function edit(User $user, Album $album): bool
+    {
+        return $this->update($user, $album);
+    }
+}

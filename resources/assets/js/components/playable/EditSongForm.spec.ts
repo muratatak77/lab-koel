@@ -1,0 +1,172 @@
+import { screen } from '@testing-library/vue'
+import { describe, expect, it } from 'vite-plus/test'
+import { createHarness } from '@/__tests__/TestHarness'
+import { arrayify } from '@/utils/helpers'
+import { eventBus } from '@/utils/eventBus'
+import type { SongUpdateResult } from '@/stores/playableStore'
+import { playableStore as songStore } from '@/stores/playableStore'
+import Component from './EditSongForm.vue'
+
+describe('editSongForm.vue', () => {
+  const h = createHarness()
+
+  const renderComponent = async (songs: MaybeArray<Song>, initialTab: EditSongFormTabName = 'details') => {
+    songs = arrayify(songs)
+
+    const rendered = h.render(Component, {
+      props: {
+        songs,
+        initialTab,
+      },
+    })
+
+    await h.tick()
+
+    return {
+      ...rendered,
+      songs,
+    }
+  }
+
+  it('edits a single song', async () => {
+    const result: SongUpdateResult = {
+      songs: [],
+      albums: [],
+      artists: [],
+      removed: {
+        album_ids: [],
+        artist_ids: [],
+      },
+    }
+
+    const updateMock = h.mock(songStore, 'updateSongs').mockResolvedValue(result)
+    const emitMock = h.mock(eventBus, 'emit')
+
+    const { songs } = await renderComponent(
+      h.factory('song').make({
+        title: 'Rocket to Heaven',
+        artist_name: 'Led Zeppelin',
+        album_name: 'IV',
+        album_cover: 'http://test/album.jpg',
+        genre: 'Rock',
+      }),
+    )
+
+    await h.type(screen.getByTestId('title-input'), 'Highway to Hell')
+    await h.type(screen.getByTestId('artist-input'), 'AC/DC')
+    await h.type(screen.getByTestId('albumArtist-input'), 'AC/DC')
+    await h.type(screen.getByTestId('album-input'), 'Back in Black')
+    await h.type(screen.getByTestId('disc-input'), '1')
+    await h.type(screen.getByTestId('track-input'), '10')
+    await h.type(screen.getByTestId('genre-input'), 'Rock & Roll')
+    await h.type(screen.getByTestId('year-input'), '1971')
+    await h.type(screen.getByTestId('lyrics-input'), "I'm gonna make him an offer he can't refuse")
+
+    await h.user.click(screen.getByRole('button', { name: 'Update' }))
+
+    expect(updateMock).toHaveBeenCalledWith(songs, {
+      title: 'Highway to Hell',
+      album_name: 'Back in Black',
+      artist_name: 'AC/DC',
+      album_artist_name: 'AC/DC',
+      lyrics: "I'm gonna make him an offer he can't refuse",
+      track: 10,
+      disc: 1,
+      genre: 'Rock & Roll',
+      year: 1971,
+    })
+
+    expect(emitMock).toHaveBeenCalledWith('SONGS_UPDATED', result)
+  })
+
+  it('edits multiple songs', async () => {
+    const result: SongUpdateResult = {
+      songs: [],
+      albums: [],
+      artists: [],
+      removed: {
+        album_ids: [],
+        artist_ids: [],
+      },
+    }
+
+    const updateMock = h.mock(songStore, 'updateSongs').mockResolvedValue(result)
+    const emitMock = h.mock(eventBus, 'emit')
+
+    const { songs } = await renderComponent(h.factory('song').make(3))
+
+    expect(screen.queryByTestId('title-input')).toBeNull()
+    expect(screen.queryByTestId('lyrics-input')).toBeNull()
+
+    await h.type(screen.getByTestId('artist-input'), 'AC/DC')
+    await h.type(screen.getByTestId('albumArtist-input'), 'AC/DC')
+    await h.type(screen.getByTestId('album-input'), 'Back in Black')
+    await h.type(screen.getByTestId('disc-input'), '1')
+    await h.type(screen.getByTestId('track-input'), '10')
+    await h.type(screen.getByTestId('year-input'), '1990')
+    await h.type(screen.getByTestId('genre-input'), 'Pop')
+
+    await h.user.click(screen.getByRole('button', { name: 'Update' }))
+
+    expect(updateMock).toHaveBeenCalledWith(songs, {
+      album_name: 'Back in Black',
+      artist_name: 'AC/DC',
+      album_artist_name: 'AC/DC',
+      track: 10,
+      disc: 1,
+      genre: 'Pop',
+      year: 1990,
+    })
+
+    expect(emitMock).toHaveBeenCalledWith('SONGS_UPDATED', result)
+  })
+
+  it('leaves an untouched album artist out of the update', async () => {
+    const updateMock = h.mock(songStore, 'updateSongs').mockResolvedValue({
+      songs: [],
+      albums: [],
+      artists: [],
+      removed: { album_ids: [], artist_ids: [] },
+    })
+
+    await renderComponent(h.factory('song').state('partOfCompilation').make())
+
+    await h.type(screen.getByTestId('track-input'), '5')
+    await h.user.click(screen.getByRole('button', { name: 'Update' }))
+
+    expect(updateMock.mock.calls[0][1]).not.toHaveProperty('album_artist_name')
+  })
+
+  it('sends a cleared album artist as empty', async () => {
+    const updateMock = h.mock(songStore, 'updateSongs').mockResolvedValue({
+      songs: [],
+      albums: [],
+      artists: [],
+      removed: { album_ids: [], artist_ids: [] },
+    })
+
+    await renderComponent(h.factory('song').state('partOfCompilation').make())
+
+    await h.user.clear(screen.getByTestId('albumArtist-input'))
+    await h.user.click(screen.getByRole('button', { name: 'Update' }))
+
+    expect(updateMock.mock.calls[0][1]).toHaveProperty('album_artist_name', '')
+  })
+
+  it('displays artist name if all songs have the same artist', async () => {
+    await renderComponent(
+      h.factory('song').make(
+        {
+          artist_id: 'led-zeppelin',
+          artist_name: 'Led Zeppelin',
+          album_id: 'iv',
+          album_name: 'IV',
+        },
+        4,
+      ),
+    )
+
+    expect(screen.getByTestId('displayed-artist-name').textContent).toBe('Led Zeppelin')
+    expect(screen.getByTestId('displayed-album-name').textContent).toBe('IV')
+  })
+})

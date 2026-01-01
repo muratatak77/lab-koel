@@ -1,0 +1,84 @@
+---
+description: Managing your profile, avatar, theme selection, playback preferences, service integration settings, and other logged-in sessions.
+---
+
+# Account Settings
+
+To manage your account, click your avatar in the bottom-right corner of the screen and choose **Settings**.
+Your own settings are listed under **Account**. If you're allowed to manage Koel's settings, you also see a **Server** group with settings for the whole Koel installation.
+
+## Profile
+
+To update your profile, you must first authenticate yourself by entering your current password.
+After that, you can update your name and email, and set a new password.
+Leaving the New Password field blank will keep your current password intact.
+
+If Koel has been [configured](../guide/getting-started#configure-a-mailer) with a mailer, a new email address only takes effect once you confirm it: Koel sends a confirmation link to the new address, valid for 24 hours, and lets your old address know about the change. If you change your mind and enter another address, only the newest link works. Until then, you keep logging in with your old address.
+
+With a mailer, Koel also emails you whenever your password changes: here, through a reset link, or by an admin. If you didn't expect that email, reset your password right away.
+
+:::tip Pick a strong password
+Koel enforces a strong password policy.
+Make sure to pick a password that is at least 10 characters long and contains a mix of letters, numbers, and special characters.
+Your password will also be checked against a list of leaked passwords for extra security.
+:::
+
+## Other Sessions
+
+Under **Security**, click **Log Out Other Sessions** to log out of Koel on every other browser and device, including [Koel Player](../mobile-apps.md). The session you're using stays logged in.
+
+## Custom Avatar
+
+By default, Koel uses [Gravatar](https://gravatar.com) to fetch your avatar based on your email address.
+By hovering over the avatar and clicking the <InterfaceIcon :src="uploadIcon" /> icon, you can select an image file from your computer, crop it, and set it as your custom avatar.
+Remember to click Save for the change to take effect.
+
+To remove your custom avatar and revert to using Gravatar, click the <InterfaceIcon :src="timesIcon" /> icon.
+
+## Themes
+
+Koel comes loaded with beautiful, handcrafted themes. You can activate a theme simply by clicking on it. The new theme
+will be applied immediately.
+
+![Theme selection](../assets/img/themes.avif)
+
+More themes are to be added in the future, along with the ability to create your own theme.
+
+## Preferences
+
+Koel allows you to set a couple of preferences:
+
+* Whether playing a song should trigger continuous playback of the entire playlist, album, artist, or genre
+* Whether to show a notification whenever a new song starts playing
+* Whether to confirm before closing Koel’s browser tab
+* Whether to show a translucent, blurred overlay of the current album’s art
+* Crossfade duration between songs (0–15 seconds, 0 to disable)
+* Whether to transcode music to a lower bitrate (mobile only, useful if you have a slow connection)
+* Whether to stream lossless files as-is if supported
+* <PlusBadge /> Whether to set your uploaded music as public by default
+* <PlusBadge /> Whether to include public media (songs, albums, and artists) from other users in your library and search results
+
+These preferences are saved immediately upon change and synced across all of your devices.
+
+## Offline Storage
+
+If you have songs [cached for offline playback](./offline-playback), this section displays your current storage usage
+with a progress bar showing used vs. available space. You can clear all cached songs at once by clicking the "Clear All" button.
+
+## Service Integrations
+
+Connect your own [Last.fm](../service-integrations#last-fm) or [ListenBrainz](../service-integrations#listenbrainz) account here, so Koel can submit what you listen to. You can disconnect them at any time.
+
+## Subsonic API Key
+
+This tab shows your personal API key for connecting [Subsonic-compatible clients](./subsonic) to your Koel library. You can reveal, copy, or regenerate the key from here.
+
+## QR Code Authentication
+
+This tab displays a QR code that you can scan to log in to [Koel Player](../mobile-apps.md) on your phone without having to manually enter your credentials.
+The code refreshes every ten minutes, but you can also manually refresh it.
+
+<script lang="ts" setup>
+import uploadIcon from '../assets/icons/upload.svg'
+import timesIcon from '../assets/icons/times.svg'
+</script>

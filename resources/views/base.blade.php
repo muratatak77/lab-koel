@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>@yield('title')</title>
+
+    <meta name="description" content="{{ config('app.tagline') }}">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="mobile-web-app-capable" content="yes">
+
+    <meta name="theme-color" content="#111111">
+    <meta name="msapplication-navbutton-color" content="#111111">
+
+    <link rel="stylesheet" href="{{ static_url('css/layer-order.css') }}">
+
+    <link rel="manifest" crossorigin="use-credentials" href="@yield('manifest', route('manifest'))" />
+    <meta name="msapplication-config" content="{{ static_url('browserconfig.xml') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ koel_branding('logo') ?? static_url('img/favicon.ico') }}" />
+    <link rel="icon" href="{{ koel_branding('logo') ?? static_url('img/icon.png') }}">
+    <link rel="apple-touch-icon" href="{{ koel_branding('logo') ?? static_url('img/icon.png') }}">
+
+    <script>
+        // Work around for "global is not defined" error with local-storage.js
+        window.global = window
+    </script>
+</head>
+<body class="text-k-fg-70">
+<div id="app"></div>
+
+<script>
+    @php
+        $koelGlobals = [
+            'base_url' => base_url(),
+            'build' => koel_build_id(),
+            'clean_urls' => (bool) config('koel.clean_urls.enabled'),
+            'is_demo' => config('koel.misc.demo'),
+            'pusher' => [
+                'app_key' => config('broadcasting.connections.pusher.key'),
+                'app_cluster' => config('broadcasting.connections.pusher.options.cluster'),
+            ],
+            'reverb' => config('broadcasting.default') === 'reverb' ? [
+                'app_key' => config('broadcasting.connections.reverb.key'),
+                'host' => config('broadcasting.connections.reverb.options.host'),
+                'port' => (int) config('broadcasting.connections.reverb.options.port'),
+                'tls' => config('broadcasting.connections.reverb.options.useTLS'),
+            ] : null,
+            'branding' => koel_branding(),
+            'gravatar' => [
+                'url' => config('services.gravatar.url'),
+                'default' => config('services.gravatar.default'),
+            ],
+        ];
+    @endphp
+    window.KOEL = @json($koelGlobals);
+</script>
+
+@stack('scripts')
+</body>
+</html>

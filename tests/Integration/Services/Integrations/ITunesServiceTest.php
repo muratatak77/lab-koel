@@ -1,0 +1,113 @@
+<?php
+
+namespace Tests\Integration\Services\Integrations;
+
+use App\Http\Integrations\iTunes\Requests\GetTrackRequest;
+use App\Http\Integrations\iTunes\Requests\LookupPodcastRequest;
+use App\Models\Album;
+use App\Models\Artist;
+use App\Services\Integrations\ITunesService;
+use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Saloon;
+use Tests\TestCase;
+
+class ITunesServiceTest extends TestCase
+{
+    private ITunesService $service;
+
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        $this->service = app(ITunesService::class);
+    }
+
+    #[Test]
+    public function configuration(): void
+    {
+        config(['koel.services.itunes.enabled' => true]);
+        self::assertTrue($this->service::used());
+
+        config(['koel.services.itunes.enabled' => false]);
+        self::assertFalse($this->service::used());
+    }
+
+    #[Test]
+    public function getTrackUrl(): void
+    {
+        config(['koel.services.itunes.enabled' => true]);
+        config(['koel.services.itunes.affiliate_id' => 'foo']);
+
+        Saloon::fake([
+            GetTrackRequest::class => MockResponse::make(body: [
+                'resultCount' => 1,
+                'results' => [['trackViewUrl' => 'https://itunes.apple.com/bar']],
+            ]),
+        ]);
+        $album = Album::factory()->for(Artist::factory()->createOne(['name' => 'Queen']))->createOne([
+            'name' => 'A Night at the Opera',
+        ]);
+
+        self::assertSame('https://itunes.apple.com/bar?at=foo', $this->service->getTrackUrl(
+            'Bohemian Rhapsody',
+            $album,
+        ));
+
+        self::assertSame('https://itunes.apple.com/bar?at=foo', Cache::get('8eca87872691f06f3cc6f2fbe6b3c528'));
+
+        Saloon::assertSent(static function (GetTrackRequest $request): bool {
+            self::assertSame(
+                [
+                    'term' => 'Bohemian Rhapsody A Night at the Opera Queen',
+                    'media' => 'music',
+                    'entity' => 'song',
+                    'limit' => 1,
+                ],
+                $request->query()->all(),
+            );
+
+            return true;
+        });
+    }
+
+    #[Test]
+    public function getTrackUrlKeepsTheTracksOwnQuery(): void
+    {
+        config(['koel.services.itunes.enabled' => true]);
+        config(['koel.services.itunes.affiliate_id' => 'foo']);
+
+        Saloon::fake([
+            GetTrackRequest::class => MockResponse::make(body: [
+                'resultCount' => 1,
+                'results' => [['trackViewUrl' => 'https://itunes.apple.com/bar?uo=4']],
+            ]),
+        ]);
+
+        self::assertSame('https://itunes.apple.com/bar?uo=4&at=foo', $this->service->getTrackUrl(
+            'Bohemian Rhapsody',
+            Album::factory()->createOne(),
+        ));
+    }
+
+    #[Test]
+    public function getPodcastFeedUrl(): void
+    {
+        Saloon::fake([
+            LookupPodcastRequest::class => MockResponse::make(body: [
+                'resultCount' => 1,
+                'results' => [['feedUrl' => 'https://feeds.simplecast.com/PpzWFGhg']],
+            ]),
+        ]);
+
+        self::assertSame('https://feeds.simplecast.com/PpzWFGhg', $this->service->getPodcastFeedUrl('917918570'));
+
+        Saloon::assertSent(
+            static fn (LookupPodcastRequest $request): bool => $request->query()->all() === [
+                'id' => '917918570',
+                'entity' => 'podcast',
+            ],
+        );
+    }
+}

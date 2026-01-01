@@ -1,0 +1,201 @@
+---
+description: Comprehensive reference of all Koel .env variables for storage, scanning, streaming, integrations, SSO, and more.
+---
+
+# Environment Variables
+
+This page documents the environment variables specific to Koel. These variables are typically set in the `.env` file
+at the root of your Koel installation.
+
+:::info Laravel Variables
+Koel is built on Laravel, which has its own set of environment variables (e.g. `APP_ENV`, `APP_DEBUG`, `APP_KEY`,
+`APP_URL`, `DB_*`, `CACHE_DRIVER`, `QUEUE_CONNECTION`, `SESSION_DRIVER`, etc.).
+These are not documented here — please refer to the [Laravel documentation](https://laravel.com/docs/configuration)
+for details.
+:::
+
+## Storage
+
+| Variable | Description | Default |
+|---|---|---|
+| `STORAGE_DRIVER` | The storage driver for your media files. Valid values: `local`, `sftp`, `s3` (Koel Plus), `dropbox` (Koel Plus), `webdav` (Koel Plus). See [Cloud Storage Support](plus/cloud-storage-support). | `local` |
+| `MEDIA_PATH` | The absolute path to your media directory. Required when using `STORAGE_DRIVER=local`. Can also be changed via the web interface. | _(empty)_ |
+| `ARTIFACTS_PATH` | The absolute path to store Koel artifacts (transcoded files, podcast episodes, temporary downloads, etc.). If empty, uses the system's temporary directory. | _(empty)_ |
+| `LARAVEL_STORAGE_PATH` | Absolute path Koel uses for writable runtime data — album/artist images (under `app/public/images`), logs, search indexes, framework cache, sessions. Set this to keep mutable state outside the application directory (read-only deploys, multi-instance setups, etc.). After setting it, run `php artisan storage:link` (or `composer koel:init`) so `public/storage` symlinks to `LARAVEL_STORAGE_PATH/app/public`. | `<app>/storage` |
+
+:::info Upgrading an older Koel install
+The image storage location moved from `public/img/storage/` to `storage/app/public/images/`
+(or `LARAVEL_STORAGE_PATH/app/public/images/` when set). `php artisan koel:init` handles the
+migration automatically on the first run after upgrading — no manual action needed.
+
+If `koel:init` reports `Some legacy images could not be migrated. Keeping public/img/storage
+for manual recovery.`, rerun `koel:init` after fixing the underlying cause (most often a
+permissions issue on `storage/`). As a last resort, perform the move manually:
+
+```bash
+mkdir -p "${LARAVEL_STORAGE_PATH:-$(pwd)/storage}/app/public/images"
+rsync -a public/img/storage/ "${LARAVEL_STORAGE_PATH:-$(pwd)/storage}/app/public/images/"
+php artisan storage:link
+```
+
+After confirming images render, the old `public/img/storage/` directory can be removed.
+:::
+
+### S3 / S3-Compatible
+
+Required when `STORAGE_DRIVER=s3`. Remember to set your CORS policy to allow access from Koel's domain.
+
+| Variable | Description | Default |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | Your AWS (or S3-compatible service) access key ID. | _(empty)_ |
+| `AWS_SECRET_ACCESS_KEY` | Your AWS secret access key. | _(empty)_ |
+| `AWS_REGION` | The region of your bucket. Set to `auto` for Cloudflare R2. | _(empty)_ |
+| `AWS_ENDPOINT` | The endpoint URL for S3-compatible services. | _(empty)_ |
+| `AWS_BUCKET` | The name of your S3 bucket. | _(empty)_ |
+
+### Dropbox
+
+Required when `STORAGE_DRIVER=dropbox`. Run `php artisan koel:setup-dropbox` to set all Dropbox-related variables.
+
+| Variable | Description | Default |
+|---|---|---|
+| `DROPBOX_APP_KEY` | Your Dropbox app key. | _(empty)_ |
+| `DROPBOX_APP_SECRET` | Your Dropbox app secret. | _(empty)_ |
+| `DROPBOX_REFRESH_TOKEN` | Your Dropbox refresh token. | _(empty)_ |
+
+### SFTP
+
+Required when `STORAGE_DRIVER=sftp`.
+
+| Variable | Description | Default |
+|---|---|---|
+| `SFTP_HOST` | The SFTP server hostname. | _(empty)_ |
+| `SFTP_PORT` | The SFTP server port. | _(empty)_ |
+| `SFTP_ROOT` | The absolute path on the SFTP server to store media files. | _(empty)_ |
+| `SFTP_USERNAME` | The SFTP username. | _(empty)_ |
+| `SFTP_PASSWORD` | The SFTP password. | _(empty)_ |
+| `SFTP_PRIVATE_KEY` | Path to the private key for key-based authentication (alternative to password). | _(empty)_ |
+| `SFTP_PASSPHRASE` | The passphrase for the private key. | _(empty)_ |
+
+### WebDAV
+
+Required when `STORAGE_DRIVER=webdav`.
+
+| Variable | Description | Default |
+|---|---|---|
+| `WEBDAV_BASE_URL` | The WebDAV base URL. For NextCloud, this looks like `https://your-nextcloud.example/remote.php/dav/files/<username>/`. | _(empty)_ |
+| `WEBDAV_USERNAME` | The WebDAV username. For NextCloud, use a dedicated [app password](https://docs.nextcloud.com/server/latest/user_manual/en/session_management.html#managing-devices) rather than the account password. | _(empty)_ |
+| `WEBDAV_PASSWORD` | The WebDAV password (or NextCloud app password). | _(empty)_ |
+| `WEBDAV_PATH_PREFIX` | Optional path prefix beneath the base URL where Koel stores its media (no leading or trailing slash). For example: `Music`. | _(empty)_ |
+
+## Media Scanning
+
+| Variable | Description | Default |
+|---|---|---|
+| `APP_MAX_SCAN_TIME` | The maximum scan time in seconds when scanning via the browser. Does not affect `koel:sync`. | `600` |
+| `MEMORY_LIMIT` | The memory limit in MB for the scanning process. Example: `2048`. | _(empty)_ |
+| `SCAN_JOBS` | The number of parallel worker processes for scanning. Set to `1` to disable parallel scanning. Can be overridden with `--jobs` flag. | `4` |
+| `IGNORE_DOT_FILES` | Whether to ignore dot files and folders when scanning. Greatly improves performance if your media root has folders like `.git` or `.cache`. | `true` |
+| `SYNC_LOG_LEVEL` | The verbosity of sync logs (found under `storage/logs/`). Options: `all`, `error`. | `error` |
+| `SCAN_LOG_MAX_FILES` | How many scan logs to keep under `storage/logs/`. A scan with nothing to report writes none. `0` keeps them all. | `30` |
+| `ANALYZE_AUDIO_ON_SCAN` <PlusBadge /> | Whether to analyze each song's loudness and waveform as soon as it's scanned or uploaded. Songs uploaded to cloud or remote storage are analyzed while the upload is processed; others use a queue job if a queue is configured. Requires FFmpeg. See [Volume Normalization & Waveforms](plus/volume-normalization). | `false` |
+
+## Streaming & Transcoding
+
+| Variable | Description | Default |
+|---|---|---|
+| `STREAMING_METHOD` | The streaming method. Options: `php`, `x-sendfile`, `x-accel-redirect`. See [Streaming Music](usage/streaming). Using `x-sendfile` or `x-accel-redirect` is highly recommended for better performance. | `php` |
+| `TRANSCODE_FLAC` | Whether to transcode FLAC to AAC on the fly. Set to `false` to stream FLAC as-is. | `true` |
+| `TRANSCODE_ON_SCAN` | Whether to transcode songs that need it as soon as they're scanned or uploaded, instead of on their first play. Songs uploaded to cloud or remote storage are transcoded while the upload is processed; others use a queue job if a queue is configured. | `false` |
+| `PREVIEWS_ON_SCAN` | Whether to create a 30-second, lower-quality preview of each song as soon as it's scanned or uploaded. Embeds in Preview mode <PlusBadge /> play it instead of the full song. To create previews for songs already in your library, run [`koel:create-song-previews`](cli-commands#koel-create-song-previews). | `false` |
+| `TRANSCODE_BIT_RATE` | The bit rate (in kbps) for transcoded audio. Higher values mean better quality but slower streaming. | `128` |
+| `TRANSCODE_AAC_FAST` | Whether to use FFmpeg's faster AAC coding algorithm. Set to `false` to use its default AAC coder. Has no effect when FFmpeg has the `libfdk_aac` encoder, which Koel then uses instead. | `true` |
+| `FFMPEG_PATH` | The full path to the ffmpeg binary. Automatically detected if left empty. See [FFmpeg](usage/ffmpeg). | _(auto-detected)_ |
+| `TRANSCODE_TIMEOUT` | The maximum time in seconds allowed for transcoding a single file. Increase for very large files. `0` disables the timeout. | `300` |
+
+## Downloading
+
+| Variable | Description | Default |
+|---|---|---|
+| `ALLOW_DOWNLOAD` | Whether to allow song downloading. | `true` |
+
+## Service Integrations
+
+Also see [Service Integrations](service-integrations) for detailed setup instructions.
+
+| Variable | Description | Default |
+|---|---|---|
+| `USE_MUSICBRAINZ` | Whether to use MusicBrainz for metadata fetching. | `true` |
+| `MUSICBRAINZ_USER_AGENT` | The user agent for MusicBrainz API requests. Auto-generated if empty. | _(auto-generated)_ |
+| `LASTFM_API_KEY` | Your Last.fm API key. Required for artist/album info and scrobbling. | _(empty)_ |
+| `LASTFM_API_SECRET` | Your Last.fm API secret. | _(empty)_ |
+| `LISTENBRAINZ_API_ENDPOINT` | The ListenBrainz API root. Change this only if you run your own ListenBrainz server. | `https://api.listenbrainz.org` |
+| `SPOTIFY_CLIENT_ID` | Your Spotify application client ID. Used for fetching artist and album images. | _(empty)_ |
+| `SPOTIFY_CLIENT_SECRET` | Your Spotify application client secret. | _(empty)_ |
+| `YOUTUBE_API_KEY` | Your YouTube API key. See [YouTube integration](service-integrations#youtube). | _(empty)_ |
+| `TICKETMASTER_API_KEY` | Your Ticketmaster API key. See [Ticketmaster](plus/ticketmaster). | _(empty)_ |
+| `TICKETMASTER_DEFAULT_COUNTRY_CODE` | Fallback country code for Ticketmaster when IP-based lookup fails. See [ISO 3166-1 alpha-2](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2). | `US` |
+| `IPINFO_TOKEN` | Your IPinfo token, used to look up the user's country for Ticketmaster. | _(empty)_ |
+| `PUSHER_APP_ID` | Your Pusher app ID. Pusher powers the remote controller and live updates while uploads are processed in the background. | _(empty)_ |
+| `PUSHER_APP_KEY` | Your Pusher app key. Once it's set, Koel broadcasts through Pusher. | _(empty)_ |
+| `PUSHER_APP_SECRET` | Your Pusher app secret. | _(empty)_ |
+| `PUSHER_APP_CLUSTER` | Your Pusher app cluster, e.g. `eu` or `ap1`. | _(empty)_ |
+| `BROADCAST_CONNECTION` | Set to `reverb` to use your own [Reverb](usage/remote-controller#using-your-own-server) server instead of Pusher. | `pusher` once `PUSHER_APP_KEY` is set, otherwise `null` |
+| `REVERB_APP_ID` | Your Reverb app ID. Any value you choose. | _(empty)_ |
+| `REVERB_APP_KEY` | Your Reverb app key. Any value you choose. | _(empty)_ |
+| `REVERB_APP_SECRET` | Your Reverb app secret. Any value you choose; keep it private. | _(empty)_ |
+| `REVERB_HOST` | The public host name browsers connect to, e.g. `ws.example.com`. | _(empty)_ |
+| `REVERB_PORT` | The public port browsers connect to. | `443` |
+| `REVERB_SCHEME` | `https` or `http`. | `https` |
+
+## SSO (Single Sign-On)
+
+Koel Plus only. See [Single Sign-On](plus/sso).
+
+| Variable | Description | Default |
+|---|---|---|
+| `SSO_GOOGLE_CLIENT_ID` | Your Google OAuth client ID. | _(empty)_ |
+| `SSO_GOOGLE_CLIENT_SECRET` | Your Google OAuth client secret. | _(empty)_ |
+| `SSO_GOOGLE_HOSTED_DOMAIN` | The Google Workspace domain users must belong to. | _(empty)_ |
+| `SSO_OIDC_ISSUER` | Issuer URL of an OpenID Connect IdP (Authentik, Authelia, Keycloak, Zitadel, …). Koel reads `<issuer>/.well-known/openid-configuration` for endpoint discovery. | _(empty)_ |
+| `SSO_OIDC_CLIENT_ID` | OAuth client ID registered with the IdP. | _(empty)_ |
+| `SSO_OIDC_CLIENT_SECRET` | OAuth client secret. | _(empty)_ |
+| `SSO_OIDC_BUTTON_LABEL` | Label shown on the OIDC login button. | `OpenID Connect` |
+| `SSO_DEFAULT_ROLE` | The role given to a user on their first SSO login: `user` or `guest`. Applies to OIDC, Google, and reverse-proxy auth. | `user` |
+
+## Proxy Authentication
+
+Koel Plus only. See [Proxy Authentication](plus/proxy-auth).
+
+| Variable | Description | Default |
+|---|---|---|
+| `PROXY_AUTH_ENABLED` | Whether to enable proxy authentication. | `false` |
+| `PROXY_AUTH_USER_HEADER` | The header containing the unique user identifier. | `remote-user` |
+| `PROXY_AUTH_PREFERRED_NAME_HEADER` | The header containing the user's preferred display name. | `remote-preferred-name` |
+| `PROXY_AUTH_ALLOW_LIST` | A comma-separated list of allowed proxy IPs or CIDRs. If empty, no requests are allowed. | _(empty)_ |
+
+## AI Assistant
+
+The AI assistant is no longer set up here. An admin turns it on and adds the provider's API key under **Settings → AI Assistant**. See [AI Assistant](./plus/ai-assistant#setup).
+
+## Miscellaneous
+
+| Variable | Description | Default |
+|---|---|---|
+| `APP_URL` | The address people use to reach Koel, e.g. `https://music.example.com`. Links in emails, such as password resets and invitations, point here, so make sure it is correct. | `http://localhost` |
+| `TRUSTED_HOSTS` | A comma-separated list of hostnames allowed to access Koel. Requests for any other hostname are rejected. Prefix a hostname with `*.` to allow any of its subdomains. Leave empty to allow any hostname. Example: `localhost,192.168.0.1,yourdomain.com,*.yourdomain.com` | _(empty)_ |
+| `TRUSTED_PROXIES` | A comma-separated list of IP addresses or ranges of the reverse proxies in front of Koel. Koel trusts `X-Forwarded-*` headers only from these. Set it if your proxy is on a public IP, such as Cloudflare. | `PRIVATE_SUBNETS` |
+| `FORCE_HTTPS` | Force Koel to use HTTPS URLs. Set to `true` if automatic detection fails. | `false` |
+| `SENTRY_LARAVEL_DSN` | Report unhandled exceptions to [Sentry](https://sentry.io). Leave empty to disable reporting entirely. Events are tagged with `APP_ENV`. | _(empty)_ |
+| `BACKUP_ON_DELETE` | Whether to create a backup of a song when deleting it from the filesystem. | `true` |
+| `CDN_URL` | A CDN URL mapped to Koel's home URL, used to serve media files. No trailing slash. | _(empty)_ |
+| `IMAGE_STORAGE_DRIVER` | The filesystem driver for artwork — album covers, artist images and avatars. Use `s3` to keep them on S3 or an S3-compatible service such as Cloudflare R2, reusing the `AWS_*` settings. | `local` |
+| `IMAGE_STORAGE_DIR` | Where artwork is stored: a path under Koel's `public` directory for the `local` driver, or a key prefix inside the bucket otherwise. | `storage/images` |
+| `IMAGE_STORAGE_BUCKET` | A separate, public bucket for artwork, so media can stay private. | _(`AWS_BUCKET`)_ |
+| `IMAGE_STORAGE_URL` | The public URL artwork is served from. Required when the driver is not `local`. No trailing slash. | _(empty)_ |
+| `IMAGE_DRIVER` | The library used to process images. Options: `gd`, `imagick`. | `gd` |
+| `MEDIA_BROWSER_ENABLED` | Whether to enable the media browser (experimental Koel Plus feature). | `false` |
+| `CLEAN_URLS_ENABLED` | Whether to use plain URLs like `/albums` instead of `/#/albums`. | `false` |
+| `EMBED_ENABLED` | Whether to allow embedding songs, albums, artists, and playlists on external sites. Set to `false` to hide the "Embed…" menu entries and disable both creation and rendering of embed widgets. | `true` |
+| `PODCASTS_ENABLED` | Whether to enable podcasts. Set to `false` to hide podcasts from the interface and stop serving them over both Koel's own API and Subsonic. Existing subscriptions and episodes are left untouched. | `true` |
+| `RADIO_ENABLED` | Whether to enable radio stations. Set to `false` to hide radio from the interface and stop serving it over both Koel's own API and Subsonic. Existing stations are left untouched. | `true` |

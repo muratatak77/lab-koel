@@ -1,0 +1,275 @@
+<template>
+  <ScreenBase :background-image="podcast?.image">
+    <template #header>
+      <ScreenHeaderSkeleton v-if="loading && !podcast" role="status" aria-busy="true" aria-label="Loading" />
+      <ScreenHeader v-if="podcast">
+        <span :title="podcast.title">{{ podcast.title }}</span>
+
+        <template #thumbnail>
+          <article class="relative aspect-square block rounded-md overflow-hidden" data-testid="podcast-thumbnail">
+            <div class="pointer-events-none">
+              <img :src="podcast.image" alt="Podcast thumbnail" />
+            </div>
+          </article>
+        </template>
+
+        <template #meta>
+          <div>
+            <p class="text-2xl text-k-fg mb-1">{{ podcast.author }}</p>
+            <div
+              ref="descriptionEl"
+              v-koel-new-tab
+              :class="{ 'cursor-pointer': description.overflown }"
+              class="leading-5 line-clamp-3"
+              @click="maybeExpandDescription"
+              v-html="description.content"
+            />
+          </div>
+        </template>
+
+        <template #controls>
+          <div class="flex gap-2 flex-wrap">
+            <Btn variant="highlight" v-if="episodes?.length" uppercase @click.prevent="playOrPause">
+              <Icon :icon="podcastPlaying ? faPause : faPlay" fixed-width />
+              {{ playButtonLabel }}
+            </Btn>
+            <BtnGroup uppercase>
+              <Btn variant="neutral" v-if="episodes" @click.prevent="refresh">
+                <Icon :icon="faRotateRight" fixed-width />
+                <span class="sr-only">Refresh Podcast</span>
+              </Btn>
+            </BtnGroup>
+
+            <ListFilter v-if="episodes?.length" />
+
+            <span class="inline-flex gap-3.5 px-2">
+              <FavoriteButton v-if="podcast.favorite" :favorite="podcast.favorite" @toggle="toggleFavorite" />
+              <StarRating :rateable="podcast" />
+            </span>
+
+            <Btn variant="ghost" @click="requestContextMenu">
+              <Icon :icon="faEllipsis" fixed-width />
+              <span class="sr-only">More Actions</span>
+            </Btn>
+          </div>
+        </template>
+      </ScreenHeader>
+    </template>
+
+    <div class="-m-6 flex flex-col flex-1 min-h-0 overflow-hidden divide-y divide-k-fg-10">
+      <template v-if="loading && !episodes && !podcast">
+        <EpisodeItemSkeleton v-for="i in 5" :key="i" />
+      </template>
+      <VirtualScroller
+        v-if="episodes && podcast"
+        carries-screen-header
+        class="flex-1 min-h-0"
+        :item-height="161.5"
+        :items="displayedEpisodes"
+      >
+        <template #default="{ item }: { item: Episode }">
+          <EpisodeItem :key="item.id" :podcast :episode="item" />
+        </template>
+      </VirtualScroller>
+    </div>
+  </ScreenBase>
+</template>
+
+<script setup lang="ts">
+import DOMPurify from 'dompurify'
+import { orderBy } from 'lodash-es'
+import { faEllipsis, faPause, faPlay, faRotateRight } from '@fortawesome/free-solid-svg-icons'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
+import { useRouter } from '@/composables/useRouter'
+import { usePageTitle } from '@/composables/usePageTitle'
+import { useErrorHandler } from '@/composables/useErrorHandler'
+import { playableStore as episodeStore } from '@/stores/playableStore'
+import { podcastStore } from '@/stores/podcastStore'
+import { queueStore } from '@/stores/queueStore'
+import { isEpisode } from '@/utils/typeGuards'
+import { useFuzzySearch } from '@/composables/useFuzzySearch'
+import { playback } from '@/services/playbackManager'
+import { FilterKeywordsKey } from '@/config/symbols'
+import { eventBus } from '@/utils/eventBus'
+import { useContextMenu } from '@/composables/useContextMenu'
+import { defineAsyncComponent } from '@/utils/helpers'
+
+import ScreenBase from '@/components/screens/ScreenBase.vue'
+import ScreenHeader from '@/components/ui/ScreenHeader.vue'
+import ScreenHeaderSkeleton from '@/components/ui/ScreenHeaderSkeleton.vue'
+import EpisodeItem from '@/components/podcast/EpisodeItem.vue'
+import VirtualScroller from '@/components/ui/VirtualScroller.vue'
+import Btn from '@/components/ui/form/Btn.vue'
+import ListFilter from '@/components/ui/ListFilter.vue'
+import StarRating from '@/components/ui/StarRating.vue'
+import BtnGroup from '@/components/ui/form/BtnGroup.vue'
+import EpisodeItemSkeleton from '@/components/podcast/EpisodeItemSkeleton.vue'
+
+const FavoriteButton = defineAsyncComponent(() => import('@/components/ui/FavoriteButton.vue'))
+const ContextMenu = defineAsyncComponent(() => import('@/components/podcast/PodcastContextMenu.vue'))
+
+const { getRouteParam, go, triggerNotFound, url } = useRouter()
+const { handleHttpError } = useErrorHandler()
+
+const description = reactive({
+  overflown: false,
+  expanded: false,
+  content: '',
+})
+
+const descriptionEl = ref<HTMLDivElement>()
+
+const loading = ref(false)
+const podcast = ref<Podcast>()
+const episodes = ref<Episode[]>([])
+const keywords = ref('')
+
+usePageTitle().useScreenTitle('Podcast', () => podcast.value?.title)
+
+provide(FilterKeywordsKey, keywords)
+
+const { search } = useFuzzySearch<Episode>(episodes, ['title', 'episode_description'])
+const { openContextMenu } = useContextMenu()
+
+const fetchDetails = async (id: Podcast['id']) => {
+  ;[podcast.value, episodes.value] = await Promise.all([
+    podcastStore.resolve(id),
+    episodeStore.fetchEpisodesInPodcast(id),
+  ])
+}
+
+const init = async () => {
+  const id = getRouteParam('id')
+
+  if (!id || loading.value) {
+    return
+  }
+
+  loading.value = true
+
+  try {
+    await fetchDetails(id)
+    description.content = DOMPurify.sanitize(podcast.value?.description || '')
+    await nextTick()
+    if (descriptionEl.value) {
+      description.overflown = descriptionEl.value.scrollHeight > descriptionEl.value.clientHeight
+    }
+  } catch (error: unknown) {
+    handleHttpError(error, {
+      404: () => triggerNotFound(),
+    })
+  } finally {
+    loading.value = false
+  }
+}
+
+const maybeExpandDescription = () => {
+  if (!description.overflown || !descriptionEl.value) {
+    return
+  }
+
+  description.expanded = !description.expanded
+  descriptionEl.value.classList.toggle('line-clamp-3')
+}
+
+const requestContextMenu = (event: MouseEvent) =>
+  openContextMenu<'PODCAST'>(ContextMenu, event, {
+    podcast: podcast.value!,
+  })
+
+const displayedEpisodes = computed(() => {
+  if (!episodes.value) {
+    return []
+  }
+
+  if (!keywords.value) {
+    return episodes.value
+  }
+
+  return search(keywords.value)
+})
+
+const inProgress = computed(() => Boolean(podcast.value?.state.current_episode))
+
+const currentPlayingItemIsPartOfPodcast = computed(() => {
+  const currentPlayable = queueStore.current
+  return currentPlayable && isEpisode(currentPlayable) && currentPlayable.podcast_id === podcast.value?.id
+})
+
+const podcastPlaying = computed(() => {
+  if (!currentPlayingItemIsPartOfPodcast.value) {
+    return false
+  }
+
+  return queueStore.current!.playback_state === 'Playing'
+})
+
+const playButtonLabel = computed(() => {
+  if (podcastPlaying.value) {
+    return ''
+  }
+
+  return inProgress.value ? 'Continue' : 'Start Listening'
+})
+
+const playOrPause = async () => {
+  if (podcastPlaying.value) {
+    playback().pause()
+    return
+  }
+
+  if (currentPlayingItemIsPartOfPodcast.value) {
+    await playback().resume()
+    return
+  }
+
+  if (inProgress.value) {
+    const currentEpisode = episodes.value?.find(episode => episode.id === podcast.value?.state.current_episode)
+    if (!currentEpisode) {
+      return
+    }
+
+    await playback().play(currentEpisode, podcast.value?.state.progresses[currentEpisode.id] || 0)
+    return
+  }
+
+  if (!episodes.value?.length) {
+    return
+  }
+
+  queueStore.replaceQueueWith(orderBy(episodes.value, 'created_at'))
+  await playback().playFirstInQueue()
+}
+
+const refresh = async () => {
+  if (loading.value) {
+    return
+  }
+
+  loading.value = true
+
+  try {
+    episodes.value = await episodeStore.fetchEpisodesInPodcast(podcast.value!.id, true)
+  } catch (error: unknown) {
+    handleHttpError(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+const toggleFavorite = () => podcastStore.toggleFavorite(podcast.value!)
+
+onMounted(() => init())
+
+const leaveIfPodcastUnsubscribed = ({ id }: Podcast) => id === podcast.value?.id && go(url('podcasts.index'))
+
+eventBus.on('PODCAST_UNSUBSCRIBED', leaveIfPodcastUnsubscribed)
+onBeforeUnmount(() => eventBus.off('PODCAST_UNSUBSCRIBED', leaveIfPodcastUnsubscribed))
+</script>
+
+<style scoped lang="postcss">
+@reference '@css/app.pcss';
+:deep(.items-wrapper) {
+  @apply divide-y divide-k-fg-10;
+}
+</style>

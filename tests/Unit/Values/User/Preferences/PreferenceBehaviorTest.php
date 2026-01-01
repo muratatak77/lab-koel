@@ -1,0 +1,213 @@
+<?php
+
+namespace Tests\Unit\Values\User\Preferences;
+
+use App\Values\EqualizerPreset;
+use App\Values\EqualizerPresetCollection;
+use App\Values\User\Preferences\ActiveExtraPanelTabPreference;
+use App\Values\User\Preferences\AlbumsSortFieldPreference;
+use App\Values\User\Preferences\AlbumsSortOrderPreference;
+use App\Values\User\Preferences\AlbumsViewModePreference;
+use App\Values\User\Preferences\ArtistsSortFieldPreference;
+use App\Values\User\Preferences\CrossfadeDurationPreference;
+use App\Values\User\Preferences\CurrentEqualizerPresetPreference;
+use App\Values\User\Preferences\EqualizerPresetsPreference;
+use App\Values\User\Preferences\HomeBlocksOrderPreference;
+use App\Values\User\Preferences\Preference;
+use App\Values\User\Preferences\RadioStationsSortFieldPreference;
+use App\Values\User\Preferences\RadioStationsViewModePreference;
+use App\Values\User\Preferences\RepeatModePreference;
+use App\Values\User\Preferences\TranscodeQualityPreference;
+use App\Values\User\Preferences\VolumePreference;
+use App\Values\User\UserPreferences;
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+use Webmozart\Assert\InvalidArgumentException as AssertException;
+
+class PreferenceBehaviorTest extends TestCase
+{
+    #[Test]
+    public function volumeCastsToFloat(): void
+    {
+        self::assertSame(7.5, VolumePreference::make('7.5')->getValue());
+        self::assertSame(0.0, VolumePreference::make(0)->getValue());
+        self::assertSame(7.0, VolumePreference::make(null)->getValue());
+    }
+
+    #[Test]
+    public function repeatModeRejectsUnknownValue(): void
+    {
+        $this->expectException(AssertException::class);
+        RepeatModePreference::make('SHUFFLE');
+    }
+
+    #[Test]
+    public function repeatModeAcceptsValidValues(): void
+    {
+        foreach (['NO_REPEAT', 'REPEAT_ALL', 'REPEAT_ONE'] as $value) {
+            self::assertSame($value, RepeatModePreference::make($value)->getValue());
+        }
+    }
+
+    #[Test]
+    public function albumsViewModeRejectsUnknownValue(): void
+    {
+        $this->expectException(AssertException::class);
+        AlbumsViewModePreference::make('mosaic');
+    }
+
+    #[Test]
+    public function albumsViewModeNormalizesLegacyValues(): void
+    {
+        self::assertSame('grid', AlbumsViewModePreference::make('thumbnails')->getValue());
+        self::assertSame('table', AlbumsViewModePreference::make('list')->getValue());
+    }
+
+    #[Test]
+    public function radioStationsViewModeNormalizesLegacyValues(): void
+    {
+        self::assertSame('grid', RadioStationsViewModePreference::make('thumbnails')->getValue());
+        self::assertSame('table', RadioStationsViewModePreference::make('list')->getValue());
+    }
+
+    #[Test]
+    public function albumsSortFieldRejectsUnknownValue(): void
+    {
+        $this->expectException(AssertException::class);
+        AlbumsSortFieldPreference::make('unknown_column');
+    }
+
+    /** @return array<string, array{class-string<Preference>, string}> */
+    public static function provideSortFieldsOfferedByTheUi(): array
+    {
+        return [
+            'albums by length' => [AlbumsSortFieldPreference::class, 'length'],
+            'albums by rating' => [AlbumsSortFieldPreference::class, 'rating'],
+            'albums by favorite' => [AlbumsSortFieldPreference::class, 'favorite'],
+            'artists by rating' => [ArtistsSortFieldPreference::class, 'rating'],
+            'artists by favorite' => [ArtistsSortFieldPreference::class, 'favorite'],
+            'radio stations by favorite' => [RadioStationsSortFieldPreference::class, 'favorite'],
+        ];
+    }
+
+    /** @param class-string<Preference> $class */
+    #[Test]
+    #[DataProvider('provideSortFieldsOfferedByTheUi')]
+    public function sortFieldAcceptsFieldOfferedByTheUi(string $class, string $field): void
+    {
+        self::assertSame($field, $class::make($field)->getValue());
+    }
+
+    #[Test]
+    public function albumsSortOrderNormalizesToLowercase(): void
+    {
+        self::assertSame('asc', AlbumsSortOrderPreference::make('ASC')->getValue());
+        self::assertSame('desc', AlbumsSortOrderPreference::make('Desc')->getValue());
+    }
+
+    #[Test]
+    public function activeExtraPanelTabRejectsUnknownTab(): void
+    {
+        $this->expectException(AssertException::class);
+        ActiveExtraPanelTabPreference::make('Settings');
+    }
+
+    #[Test]
+    public function crossfadeDurationRejectsOutOfRange(): void
+    {
+        $this->expectException(AssertException::class);
+        CrossfadeDurationPreference::make(20);
+    }
+
+    #[Test]
+    public function transcodeQualityFallsBackTo128ForUnknownBitrate(): void
+    {
+        self::assertSame(128, TranscodeQualityPreference::make(99)->getValue());
+        self::assertSame(256, TranscodeQualityPreference::make(256)->getValue());
+    }
+
+    #[Test]
+    public function onlyIntegrationTokensAreEncrypted(): void
+    {
+        self::assertEqualsCanonicalizing(
+            ['lastfm_session_key', 'listenbrainz_token'],
+            UserPreferences::encryptedKeys(),
+        );
+    }
+
+    #[Test]
+    public function currentEqualizerPresetExposesLegacyAlias(): void
+    {
+        $aliases = (new CurrentEqualizerPresetPreference())->getAliases();
+        self::assertSame(['equalizer'], $aliases);
+    }
+
+    #[Test]
+    public function currentEqualizerPresetParsesArray(): void
+    {
+        $value = CurrentEqualizerPresetPreference::make([
+            'name' => 'Rock',
+            'preamp' => 2.0,
+            'gains' => [4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+        ])->getValue();
+
+        self::assertInstanceOf(EqualizerPreset::class, $value);
+        self::assertSame('Rock', $value->name);
+    }
+
+    #[Test]
+    public function currentEqualizerPresetPassesThroughInstance(): void
+    {
+        $preset = EqualizerPreset::default();
+        self::assertSame($preset, CurrentEqualizerPresetPreference::make($preset)->getValue());
+    }
+
+    #[Test]
+    public function equalizerPresetsParsesArrayOfPresets(): void
+    {
+        $value = EqualizerPresetsPreference::make([
+            ['id' => '01J0000000000000000000ABCD', 'name' => 'Mine', 'preamp' => 0, 'gains' => array_fill(0, 10, 0)],
+        ])->getValue();
+
+        self::assertInstanceOf(EqualizerPresetCollection::class, $value);
+        self::assertCount(1, $value);
+        self::assertSame('Mine', $value->first()->name);
+    }
+
+    #[Test]
+    public function homeBlocksOrderAcceptsArrayOfStrings(): void
+    {
+        $ids = ['random-songs', 'recently-added-albums', 'most-played-songs'];
+        self::assertSame($ids, HomeBlocksOrderPreference::make($ids)->getValue());
+    }
+
+    #[Test]
+    public function homeBlocksOrderFiltersNonStringEntriesAndReindexes(): void
+    {
+        $value = HomeBlocksOrderPreference::make([
+            'random-songs',
+            42,
+            null,
+            'recently-added-albums',
+            ['nested'],
+        ])->getValue();
+
+        self::assertSame(['random-songs', 'recently-added-albums'], $value);
+    }
+
+    #[Test]
+    public function homeBlocksOrderCoercesNonArrayInputToEmpty(): void
+    {
+        self::assertSame([], HomeBlocksOrderPreference::make('not-an-array')->getValue());
+        self::assertSame([], HomeBlocksOrderPreference::make(123)->getValue());
+    }
+
+    #[Test]
+    public function unknownPropertyAccessThrows(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        VolumePreference::make(7.0)->somethingWrong; // @phpstan-ignore-line
+    }
+}

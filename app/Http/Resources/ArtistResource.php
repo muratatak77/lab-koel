@@ -1,0 +1,105 @@
+<?php
+
+namespace App\Http\Resources;
+
+use App\Facades\License;
+use App\Models\Artist;
+use App\Models\User;
+use App\Services\Integrations\MusicBrainzService;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class ArtistResource extends JsonResource
+{
+    public const array JSON_STRUCTURE = [
+        'type',
+        'id',
+        'name',
+        'image',
+        'album_cover',
+        'created_at',
+        'mbid',
+        'rating',
+        'permissions' => [
+            'edit',
+        ],
+    ];
+
+    public const array PAGINATION_JSON_STRUCTURE = [
+        'data' => [
+            '*' => self::JSON_STRUCTURE,
+        ],
+        'links' => [
+            'first',
+            'last',
+            'prev',
+            'next',
+        ],
+        'meta' => [
+            'current_page',
+            'from',
+            'path',
+            'per_page',
+            'to',
+        ],
+    ];
+
+    public const array CURSOR_PAGINATION_JSON_STRUCTURE = [
+        'data' => [
+            '*' => self::JSON_STRUCTURE,
+        ],
+        'links' => [
+            'first',
+            'last',
+            'prev',
+            'next',
+        ],
+        'meta' => [
+            'path',
+            'per_page',
+            'next_cursor',
+            'prev_cursor',
+        ],
+    ];
+
+    private ?User $user = null;
+
+    public function __construct(
+        private readonly Artist $artist,
+    ) {
+        parent::__construct($artist);
+    }
+
+    public function for(User $user): self
+    {
+        $this->user = $user;
+
+        return $this;
+    }
+
+    /** @inheritdoc */
+    public function toArray($request): array
+    {
+        // @mago-ignore lint:prefer-first-class-callable
+        $isPlus = once(static fn () => License::isPlus());
+        $user = $this->user ?? once(static fn () => auth()->user());
+        $embedding = $request->routeIs('embeds.payload');
+        $musicBrainzEnabled = MusicBrainzService::enabled();
+
+        return [
+            'type' => 'artists',
+            'id' => $this->artist->id,
+            'name' => $this->artist->name,
+            'image' => image_storage_url($this->artist->image),
+            'album_cover' => image_storage_url($this->artist->album_cover),
+            'description' => $this->unless($embedding, $this->artist->description),
+            'created_at' => $this->unless($embedding, $this->artist->created_at),
+            'mbid' => $this->when($musicBrainzEnabled && !$embedding, $this->artist->mbid),
+            'is_external' => $this->unless($embedding, fn () => $isPlus && $this->artist->user_id !== $user->id),
+            'favorite' => $this->unless($embedding, $this->artist->favorite),
+            'rating' => $this->unless($embedding, fn () => (int) ($this->artist->rating ?? 0)),
+            'permissions' => $this->unless($embedding, fn () => [
+                'edit' => $user->can('edit', $this->artist),
+            ]),
+        ];
+    }
+}

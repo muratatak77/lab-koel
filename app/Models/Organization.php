@@ -1,0 +1,66 @@
+<?php
+
+namespace App\Models;
+
+use Database\Factories\OrganizationFactory;
+use Illuminate\Database\Eloquent\Attributes\Guarded;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
+
+/**
+ * @property string $id
+ * @property string $name
+ * @property ?string $slug
+ * @property ?int $owner_id
+ * @property ?User $owner
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ *
+ * @property-read Collection<int, User>|array<array-key, User> $users
+ *
+ * @method static OrganizationFactory factory(...$parameters)
+ */
+
+#[Guarded(['id'])]
+class Organization extends Model
+{
+    use HasUlids;
+    use HasFactory;
+
+    public const string DEFAULT_SLUG = 'koel';
+
+    public static function default(): Organization
+    {
+        return once(static fn () => self::query()->firstOrCreate(['slug' => self::DEFAULT_SLUG], ['name' => 'Koel']));
+    }
+
+    public function users(): HasMany
+    {
+        return $this->hasMany(User::class);
+    }
+
+    public function owner(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'owner_id');
+    }
+
+    public function ownedBy(User $user): bool
+    {
+        return $this->owner_id === $user->id;
+    }
+
+    public function claimOwnership(User $user): void
+    {
+        if ($this->owner_id) {
+            return;
+        }
+
+        $this->owner()->associate($user);
+        $this->save();
+    }
+}

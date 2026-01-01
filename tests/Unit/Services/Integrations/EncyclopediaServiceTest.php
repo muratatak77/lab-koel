@@ -1,0 +1,421 @@
+<?php
+
+namespace Tests\Unit\Services\Integrations;
+
+use App\Exceptions\MusicBrainzBusyException;
+use App\Jobs\FetchAlbumInformationJob;
+use App\Jobs\FetchArtistInformationJob;
+use App\Models\Album;
+use App\Models\Artist;
+use App\Services\Contracts\Encyclopedia;
+use App\Services\Image\ImageStorage;
+use App\Services\Integrations\CoverArtArchiveService;
+use App\Services\Integrations\EncyclopediaService;
+use App\Services\Integrations\LastfmService;
+use App\Services\Integrations\MbidService;
+use App\Services\Integrations\MusicBrainzRateLimiter;
+use App\Services\Integrations\SpotifyService;
+use App\Services\Integrations\WikidataService;
+use App\Values\Album\AlbumInformation;
+use App\Values\Artist\ArtistInformation;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Cache;
+use Mockery;
+use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\Test;
+use RuntimeException;
+use Tests\TestCase;
+
+class EncyclopediaServiceTest extends TestCase
+{
+    private Encyclopedia|MockInterface $encyclopedia;
+    private ImageStorage|MockInterface $imageStorage;
+    private SpotifyService|MockInterface $spotifyService;
+    private CoverArtArchiveService|MockInterface $coverArtArchiveService;
+    private WikidataService|MockInterface $wikidataService;
+    private MbidService|MockInterface $mbidService;
+    private EncyclopediaService $encyclopediaService;
+
+    private array $spotifyConfig;
+
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        $this->encyclopedia = Mockery::mock(LastfmService::class);
+        $this->imageStorage = Mockery::mock(ImageStorage::class);
+        $this->spotifyService = Mockery::mock(SpotifyService::class);
+        $this->coverArtArchiveService = Mockery::mock(CoverArtArchiveService::class);
+        $this->coverArtArchiveService->allows('tryGetAlbumCover')->andReturnNull()->byDefault();
+        $this->wikidataService = Mockery::mock(WikidataService::class);
+        $this->wikidataService->allows('tryGetArtistImage')->andReturnNull()->byDefault();
+        $this->mbidService = Mockery::mock(MbidService::class);
+        $this->mbidService->allows('fetchAndStoreAlbumMbids');
+        $this->mbidService->allows('fetchAndStoreAlbumYear');
+        $this->mbidService->allows('fetchAndStoreArtistMbid');
+
+        $this->encyclopediaService = new EncyclopediaService(
+            $this->encyclopedia,
+            $this->imageStorage,
+            $this->spotifyService,
+            $this->coverArtArchiveService,
+            $this->wikidataService,
+            $this->mbidService,
+            new MusicBrainzRateLimiter('redis'),
+        );
+
+        $this->spotifyConfig = config('koel.services.spotify');
+    }
+
+    public function tearDown(): void
+    {
+        config()->set('koel.services.spotify', $this->spotifyConfig);
+
+        parent::tearDown();
+    }
+
+    #[Test]
+    public function getAlbumInformation(): void
+    {
+        $album = Album::factory()->createOne();
+        $info = AlbumInformation::make();
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->andReturn($info);
+
+        self::assertEquals(
+            $info->withCover(image_storage_url($album->cover)),
+            $this->encyclopediaService->getAlbumInformation($album),
+        );
+        self::assertNotNull(cache()->get(cache_key('album information', $album->name, $album->artist->name)));
+    }
+
+    #[Test]
+    public function getAlbumInformationKeepsTheAlbumsOwnCover(): void
+    {
+        $album = Album::factory()->createOne(['cover' => 'own-cover.jpg']);
+
+        $this->encyclopedia
+            ->expects('getAlbumInformation')
+            ->with($album)
+            ->andReturn(AlbumInformation::make(cover: 'https://wiki.example.com/album-cover.jpg'));
+
+        self::assertSame(
+            image_storage_url('own-cover.jpg'),
+            $this->encyclopediaService->getAlbumInformation($album)->cover,
+        );
+    }
+
+    #[Test]
+    public function getAlbumInformationTriesDownloadingCover(): void
+    {
+        $album = Album::factory()->createOne(['cover' => '']);
+        $info = AlbumInformation::make(cover: 'https://wiki.example.com/album-cover.jpg');
+
+        self::assertEmpty($album->cover);
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->andReturn($info);
+
+        $this->imageStorage->expects('storeImage')->with('https://wiki.example.com/album-cover.jpg');
+
+        self::assertSame($info, $this->encyclopediaService->getAlbumInformation($album));
+    }
+
+    #[Test]
+    public function getAlbumInformationPrefersSpotifyForFetchingCoverImage(): void
+    {
+        config()->set('koel.services.spotify', [
+            'client_id' => 'spotify-client-id',
+            'client_secret' => 'spotify-client-secret',
+        ]);
+        $album = Album::factory()->createOne(['cover' => '']);
+        $info = AlbumInformation::make(cover: 'https://wiki.example.com/album-cover.jpg');
+
+        self::assertEmpty($album->cover);
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->andReturn($info);
+
+        $this->spotifyService->expects('tryGetAlbumCover')->with($album)->andReturn('https://spotify.com/cover.jpg');
+
+        $this->imageStorage->expects('storeImage')->with('https://spotify.com/cover.jpg');
+
+        self::assertSame($info, $this->encyclopediaService->getAlbumInformation($album));
+    }
+
+    #[Test]
+    public function getAlbumInformationPrefersTheCoverArtArchiveOverSpotify(): void
+    {
+        config()->set('koel.services.spotify', [
+            'client_id' => 'spotify-client-id',
+            'client_secret' => 'spotify-client-secret',
+        ]);
+        $album = Album::factory()->createOne(['cover' => '']);
+        $info = AlbumInformation::make(cover: 'https://wiki.example.com/album-cover.jpg');
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->andReturn($info);
+
+        $this->coverArtArchiveService
+            ->expects('tryGetAlbumCover')
+            ->with($album)
+            ->andReturn('https://coverartarchive.org/release/foo/bar-1200.jpg');
+
+        $this->spotifyService->expects('tryGetAlbumCover')->never();
+        $this->imageStorage->expects('storeImage')->with('https://coverartarchive.org/release/foo/bar-1200.jpg');
+
+        self::assertSame($info, $this->encyclopediaService->getAlbumInformation($album));
+    }
+
+    #[Test]
+    public function getArtistInformation(): void
+    {
+        $artist = Artist::factory()->createOne();
+        $info = ArtistInformation::make();
+
+        self::assertNotEmpty($artist->image);
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn($info);
+
+        self::assertEquals(
+            $info->withImage(image_storage_url($artist->image)),
+            $this->encyclopediaService->getArtistInformation($artist),
+        );
+        self::assertNotNull(cache()->get(cache_key('artist information', $artist->name)));
+    }
+
+    #[Test]
+    public function getArtistInformationKeepsTheArtistsOwnImage(): void
+    {
+        $artist = Artist::factory()->createOne(['image' => 'own-image.jpg']);
+
+        $this->encyclopedia
+            ->expects('getArtistInformation')
+            ->with($artist)
+            ->andReturn(ArtistInformation::make(image: 'https://wiki.example.com/artist-image.jpg'));
+
+        self::assertSame(
+            image_storage_url('own-image.jpg'),
+            $this->encyclopediaService->getArtistInformation($artist)->image,
+        );
+    }
+
+    #[Test]
+    public function getArtistInformationTriesDownloadingImage(): void
+    {
+        $artist = Artist::factory()->createOne(['image' => '']);
+        $info = ArtistInformation::make(image: 'https://wiki.example.com/artist-image.jpg');
+
+        self::assertEmpty($artist->image);
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn($info);
+
+        $this->imageStorage->expects('storeImage')->with('https://wiki.example.com/artist-image.jpg');
+
+        self::assertSame($info, $this->encyclopediaService->getArtistInformation($artist));
+    }
+
+    #[Test]
+    public function getArtistInformationPrefersSpotifyForFetchingImage(): void
+    {
+        config()->set('koel.services.spotify', [
+            'client_id' => 'spotify-client-id',
+            'client_secret' => 'spotify-client-secret',
+        ]);
+        $artist = Artist::factory()->createOne(['image' => '']);
+        $info = ArtistInformation::make(image: 'https://wiki.example.com/artist-image.jpg');
+
+        self::assertEmpty($artist->image);
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn($info);
+
+        $this->spotifyService->expects('tryGetArtistImage')->with($artist)->andReturn('https://spotify.com/image.jpg');
+
+        $this->imageStorage->expects('storeImage')->with('https://spotify.com/image.jpg');
+
+        self::assertSame($info, $this->encyclopediaService->getArtistInformation($artist));
+    }
+
+    #[Test]
+    public function getAlbumInformationGracefullyHandlesCacheFailure(): void
+    {
+        Cache::shouldReceive('remember')->andThrow(new RuntimeException('file_put_contents failed'));
+
+        $album = Album::factory()->createOne();
+        $info = AlbumInformation::make();
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->andReturn($info);
+
+        self::assertEquals(
+            $info->withCover(image_storage_url($album->cover)),
+            $this->encyclopediaService->getAlbumInformation($album),
+        );
+    }
+
+    #[Test]
+    public function getArtistInformationGracefullyHandlesCacheFailure(): void
+    {
+        Cache::shouldReceive('remember')->andThrow(new RuntimeException('file_put_contents failed'));
+
+        $artist = Artist::factory()->createOne(['image' => 'existing.jpg']);
+        $info = ArtistInformation::make();
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn($info);
+
+        self::assertEquals(
+            $info->withImage(image_storage_url($artist->image)),
+            $this->encyclopediaService->getArtistInformation($artist),
+        );
+    }
+
+    #[Test]
+    public function getArtistInformationFetchesTheWikidataImageWhateverTheEncyclopedia(): void
+    {
+        $artist = Artist::factory()->createOne(['image' => '', 'mbid' => '66c662b6-6e2f-4930-8610-912e24c63ed1']);
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn(ArtistInformation::make());
+
+        $this->wikidataService
+            ->expects('tryGetArtistImage')
+            ->with($artist)
+            ->andReturn('https://commons.wikimedia.org/wiki/Special:FilePath/AC%20DC.jpg?width=640');
+
+        $this->imageStorage
+            ->expects('storeImage')
+            ->with('https://commons.wikimedia.org/wiki/Special:FilePath/AC%20DC.jpg?width=640');
+
+        $this->encyclopediaService->getArtistInformation($artist);
+    }
+
+    #[Test]
+    public function getArtistInformationPrefersTheWikidataImageOverSpotify(): void
+    {
+        config()->set('koel.services.spotify', [
+            'client_id' => 'spotify-client-id',
+            'client_secret' => 'spotify-client-secret',
+        ]);
+
+        $artist = Artist::factory()->createOne(['image' => '', 'mbid' => '66c662b6-6e2f-4930-8610-912e24c63ed1']);
+
+        $this->encyclopedia->expects('getArtistInformation')->with($artist)->andReturn(ArtistInformation::make());
+
+        $this->wikidataService
+            ->expects('tryGetArtistImage')
+            ->with($artist)
+            ->andReturn('https://commons.wikimedia.org/wiki/Special:FilePath/AC%20DC.jpg?width=640');
+
+        $this->spotifyService->expects('tryGetArtistImage')->never();
+
+        $this->imageStorage
+            ->expects('storeImage')
+            ->with('https://commons.wikimedia.org/wiki/Special:FilePath/AC%20DC.jpg?width=640');
+
+        $this->encyclopediaService->getArtistInformation($artist);
+    }
+
+    #[Test]
+    public function retryAnAlbumNotFoundInTheEncyclopediaTheNextDay(): void
+    {
+        $album = Album::factory()->createOne(['cover' => 'existing.jpg']);
+
+        $this->encyclopedia->expects('getAlbumInformation')->twice()->andReturn(null);
+
+        $this->encyclopediaService->getAlbumInformation($album);
+        $this->travel(2)->days();
+        $this->encyclopediaService->getAlbumInformation($album);
+    }
+
+    #[Test]
+    public function keepAnAlbumFoundInTheEncyclopediaForAWeek(): void
+    {
+        $album = Album::factory()->createOne(['cover' => 'existing.jpg']);
+
+        $this->encyclopedia
+            ->expects('getAlbumInformation')
+            ->once()
+            ->andReturn(AlbumInformation::make(url: 'https://www.last.fm/music/Cher/Believe'));
+
+        $this->encyclopediaService->getAlbumInformation($album);
+        $this->travel(2)->days();
+        $this->encyclopediaService->getAlbumInformation($album);
+    }
+
+    #[Test]
+    public function forgetCachedAlbumInformation(): void
+    {
+        $album = Album::factory()->createOne(['cover' => 'existing.jpg']);
+
+        $this->encyclopedia->expects('getAlbumInformation')->with($album)->twice()->andReturn(AlbumInformation::make());
+
+        $this->encyclopediaService->getAlbumInformation($album);
+        $this->encyclopediaService->forgetAlbumInformation($album);
+        $this->encyclopediaService->getAlbumInformation($album);
+    }
+
+    #[Test]
+    public function forgetCachedArtistInformation(): void
+    {
+        $artist = Artist::factory()->createOne(['image' => 'existing.jpg']);
+
+        $this->encyclopedia
+            ->expects('getArtistInformation')
+            ->with($artist)
+            ->twice()
+            ->andReturn(ArtistInformation::make());
+
+        $this->encyclopediaService->getArtistInformation($artist);
+        $this->encyclopediaService->forgetArtistInformation($artist);
+        $this->encyclopediaService->getArtistInformation($artist);
+    }
+
+    #[Test]
+    public function leaveABusyAlbumLookupUncachedAndFillItInLater(): void
+    {
+        Bus::fake();
+        $album = Album::factory()->createOne();
+        $this->encyclopedia->expects('getAlbumInformation')->twice()->andThrow(MusicBrainzBusyException::create());
+
+        self::assertEquals(
+            AlbumInformation::make(cover: image_storage_url($album->cover)),
+            $this->encyclopediaService->getAlbumInformation($album),
+        );
+        $this->encyclopediaService->getAlbumInformation($album);
+
+        Bus::assertDispatched(FetchAlbumInformationJob::class);
+    }
+
+    #[Test]
+    public function leaveABusyArtistLookupUncachedAndFillItInLater(): void
+    {
+        Bus::fake();
+        $artist = Artist::factory()->createOne();
+        $this->encyclopedia->expects('getArtistInformation')->twice()->andThrow(MusicBrainzBusyException::create());
+
+        self::assertEquals(
+            ArtistInformation::make(image: image_storage_url($artist->image)),
+            $this->encyclopediaService->getArtistInformation($artist),
+        );
+        $this->encyclopediaService->getArtistInformation($artist);
+
+        Bus::assertDispatched(FetchArtistInformationJob::class);
+    }
+
+    #[Test]
+    public function queueNothingForABusyLookupWithoutAQueue(): void
+    {
+        Bus::fake();
+        $album = Album::factory()->createOne();
+        $this->encyclopedia->expects('getAlbumInformation')->andThrow(MusicBrainzBusyException::create());
+
+        $encyclopediaService = new EncyclopediaService(
+            $this->encyclopedia,
+            $this->imageStorage,
+            $this->spotifyService,
+            $this->coverArtArchiveService,
+            $this->wikidataService,
+            $this->mbidService,
+            new MusicBrainzRateLimiter('sync'),
+        );
+
+        $encyclopediaService->getAlbumInformation($album);
+
+        Bus::assertNothingDispatched();
+    }
+}

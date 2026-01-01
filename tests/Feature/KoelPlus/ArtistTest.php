@@ -1,0 +1,154 @@
+<?php
+
+namespace Tests\Feature\KoelPlus;
+
+use App\Http\Resources\ArtistResource;
+use App\Models\Album;
+use App\Models\Artist;
+use App\Models\Song;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\PlusTestCase;
+
+use function Tests\create_admin;
+use function Tests\create_user;
+
+class ArtistTest extends PlusTestCase
+{
+    #[Test]
+    public function updateAsOwner(): void
+    {
+        $artist = Artist::factory()->createOne();
+
+        $this->putAs(
+            "api/artists/{$artist->id}",
+            [
+                'name' => 'Updated Artist Name',
+            ],
+            $artist->user,
+        )->assertJsonStructure(ArtistResource::JSON_STRUCTURE);
+
+        $artist->refresh();
+
+        self::assertEquals('Updated Artist Name', $artist->name);
+    }
+
+    #[Test]
+    public function adminCannotUpdateIfNonOwner(): void
+    {
+        $artist = Artist::factory()->createOne();
+        $scaryBossMan = create_admin();
+
+        self::assertFalse($artist->belongsToUser($scaryBossMan));
+
+        $this->putAs(
+            "api/artists/{$artist->id}",
+            [
+                'name' => 'Updated Artist Name',
+            ],
+            $scaryBossMan,
+        )->assertForbidden();
+    }
+
+    #[Test]
+    public function updateForbiddenForNonOwners(): void
+    {
+        $artist = Artist::factory()->createOne();
+        $randomDude = create_user();
+
+        self::assertFalse($artist->belongsToUser($randomDude));
+
+        $this->putAs(
+            "api/artists/{$artist->id}",
+            [
+                'name' => 'Updated Artist Name',
+            ],
+            $randomDude,
+        )->assertForbidden();
+    }
+
+    #[Test]
+    public function showIncludesEditPermissionForOwner(): void
+    {
+        $artist = Artist::factory()->createOne();
+
+        $this->getAs("api/artists/{$artist->id}", $artist->user)->assertJsonPath('permissions.edit', true);
+    }
+
+    #[Test]
+    public function albumArtistOfAnotherUsersPublicAlbumIsAccessible(): void
+    {
+        $owner = create_user();
+        $curator = Artist::factory()->for($owner)->createOne();
+        $album = Album::factory()->for($curator)->for($owner)->createOne();
+
+        Song::factory()
+            ->for($album)
+            ->for(Artist::factory()->for($owner)->createOne())
+            ->for($owner, 'owner')
+            ->public()
+            ->createOne();
+
+        $viewer = create_user();
+        $viewer->preferences->includePublicMedia = true;
+        $viewer->save();
+
+        $this->getAs("api/artists/{$curator->id}", $viewer)->assertOk();
+    }
+
+    #[Test]
+    public function performerOfAnotherUsersPublicSongIsAccessible(): void
+    {
+        $owner = create_user();
+        $performer = Artist::factory()->for($owner)->createOne();
+
+        Song::factory()
+            ->for(Album::factory()->for($owner)->createOne())
+            ->for($performer)
+            ->for($owner, 'owner')
+            ->public()
+            ->createOne();
+
+        $viewer = create_user();
+        $viewer->preferences->includePublicMedia = true;
+        $viewer->save();
+
+        $this->getAs("api/artists/{$performer->id}", $viewer)->assertOk();
+    }
+
+    #[Test]
+    public function showLeavesOutTheCoverOfAnotherUsersPrivateAlbum(): void
+    {
+        $owner = create_user();
+        $artist = Artist::factory()->for($owner)->createOne(['image' => '']);
+        $sharedAlbum = Album::factory()
+            ->for($artist)
+            ->for($owner)
+            ->createOne([
+                'cover' => 'shared.webp',
+                'created_at' => now()->subYear(),
+            ]);
+        $privateAlbum = Album::factory()->for($artist)->for($owner)->createOne(['cover' => 'private.webp']);
+
+        Song::factory()
+            ->for($sharedAlbum)
+            ->for($artist)
+            ->for($owner, 'owner')
+            ->public()
+            ->createOne();
+        Song::factory()
+            ->for($privateAlbum)
+            ->for($artist)
+            ->for($owner, 'owner')
+            ->private()
+            ->createOne();
+
+        $viewer = create_user();
+        $viewer->preferences->includePublicMedia = true;
+        $viewer->save();
+
+        $this->getAs("api/artists/{$artist->id}", $viewer)->assertJsonPath(
+            'album_cover',
+            image_storage_url('shared.webp'),
+        );
+    }
+}

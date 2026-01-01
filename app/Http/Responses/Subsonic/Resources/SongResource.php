@@ -1,0 +1,87 @@
+<?php
+
+namespace App\Http\Responses\Subsonic\Resources;
+
+use App\Models\Song;
+use App\Models\User;
+
+final class SongResource
+{
+    /** Keys always present after stripNulls. Nullable fields like album/artist/track/year/genre/coverArt/size/contentType/suffix/discNumber/userRating are not listed because they may be absent. */
+    public const array JSON_STRUCTURE = [
+        'id',
+        'parent',
+        'isDir',
+        'title',
+        'duration',
+        'created',
+        'albumId',
+        'artistId',
+        'type',
+        'isVideo',
+    ];
+
+    /**
+     * @return array{
+     *     id: string,
+     *     parent: string,
+     *     isDir: bool,
+     *     title: string,
+     *     album: ?string,
+     *     artist: ?string,
+     *     track: ?int,
+     *     year: ?int,
+     *     genre: ?string,
+     *     coverArt: ?string,
+     *     size: ?int,
+     *     contentType: ?string,
+     *     suffix: ?string,
+     *     duration: int,
+     *     created: string,
+     *     albumId: string,
+     *     artistId: string,
+     *     type: string,
+     *     discNumber: ?int,
+     *     isVideo: bool,
+     *     userRating: ?int,
+     *     starred: ?string,
+     *     played: ?string,
+     *     musicBrainzId: ?string,
+     *     displayAlbumArtist: ?string,
+     *     albumArtists: ?array<array{id: string, name: string}>,
+     * }
+     */
+    public static function toArray(Song $song, User $user): array
+    {
+        return [
+            'id' => $song->id,
+            'parent' => $song->album_id,
+            'isDir' => false,
+            'title' => $song->title,
+            'album' => $song->album_name,
+            'artist' => $song->artist_name,
+            'track' => $song->track ?: null,
+            'year' => $song->year,
+            'genre' => $song->genre ?: null,
+            'coverArt' => $song->album?->cover ? $song->album_id : null,
+            'size' => $song->file_size,
+            'contentType' => $song->mime_type,
+            'suffix' => pathinfo($song->path, PATHINFO_EXTENSION) ?: null,
+            'duration' => (int) round($song->length),
+            'created' => $song->created_at->toIso8601String(),
+            'albumId' => $song->album_id,
+            'artistId' => $song->artist_id,
+            'type' => 'music',
+            'discNumber' => $song->disc ?: null,
+            'isVideo' => false,
+            'userRating' => (int) ($song->rating ?? 0) ?: null,
+            'starred' => $song->favorited_at?->toIso8601String(),
+            'played' => $song->last_played_at?->toIso8601String(),
+            'musicBrainzId' => $song->mbid,
+            'displayAlbumArtist' => $song->album_artist?->name,
+            'albumArtists' => $song->album_artist
+                ? [['id' => $song->album_artist->id, 'name' => $song->album_artist->name]]
+                : null,
+        ];
+    }
+}

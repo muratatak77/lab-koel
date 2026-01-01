@@ -1,0 +1,177 @@
+<?php
+
+namespace Tests\Unit\Models;
+
+use App\Enums\SongStorageType;
+use App\Models\Artist;
+use App\Models\Genre;
+use App\Models\Organization;
+use App\Models\Song;
+use App\Values\SongStorageMetadata\S3CompatibleMetadata;
+use App\Values\SongStorageMetadata\S3LambdaMetadata;
+use Illuminate\Database\Eloquent\Builder;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+use function Tests\create_user;
+
+class SongTest extends TestCase
+{
+    #[Test]
+    public function retrievedLyricsPreserveTimestamps(): void
+    {
+        $song = Song::factory()->createOne(['lyrics' => "[00:00.00]Line 1\n[00:01.00]Line 2\n[00:02.00]Line 3"]);
+
+        self::assertSame("[00:00.00]Line 1\n[00:01.00]Line 2\n[00:02.00]Line 3", $song->lyrics);
+        self::assertSame("[00:00.00]Line 1\n[00:01.00]Line 2\n[00:02.00]Line 3", $song->getAttributes()['lyrics']);
+    }
+
+    #[Test]
+    public function syncGenres(): void
+    {
+        $song = Song::factory()->createOne();
+        $song->syncGenres('Pop, Rock');
+
+        self::assertCount(2, $song->genres);
+        self::assertEqualsCanonicalizing(['Pop', 'Rock'], $song->genres->pluck('name')->all());
+    }
+
+    /** @return array<mixed> */
+    public static function provideGenreData(): array
+    {
+        return [
+            ['Rock, Pop',    true],
+            ['Pop, Rock',    true],
+            ['Rock,   Pop ', true],
+            ['Rock',         false],
+            ['Jazz, Pop',    false],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('provideGenreData')]
+    public function genreEqualsTo(string $target, bool $isEqual): void
+    {
+        $song = Song::factory()
+            ->hasAttached(Genre::factory()->createOne(['name' => 'Pop']))
+            ->hasAttached(Genre::factory()->createOne(['name' => 'Rock']))
+            ->create()
+            ->refresh();
+
+        self::assertSame($isEqual, $song->genreEqualsTo($target));
+    }
+
+    #[Test]
+    public function s3StorageMetadataHandlesNestedKeys(): void
+    {
+        $song = Song::factory()->createOne([
+            'path' => 's3://my-bucket/path/to/nested/file.mp3',
+            'storage' => SongStorageType::S3,
+        ]);
+
+        $metadata = $song->storage_metadata;
+
+        self::assertInstanceOf(S3CompatibleMetadata::class, $metadata);
+        self::assertSame('my-bucket', $metadata->bucket);
+        self::assertSame('path/to/nested/file.mp3', $metadata->key);
+    }
+
+    #[Test]
+    public function s3LambdaStorageMetadataHandlesNestedKeys(): void
+    {
+        $song = Song::factory()->createOne([
+            'path' => 's3://my-bucket/path/to/nested/file.mp3',
+            'storage' => SongStorageType::S3_LAMBDA,
+        ]);
+
+        $metadata = $song->storage_metadata;
+
+        self::assertInstanceOf(S3LambdaMetadata::class, $metadata);
+        self::assertSame('my-bucket', $metadata->bucket);
+        self::assertSame('path/to/nested/file.mp3', $metadata->key);
+    }
+
+    #[Test]
+    public function deletingByChunk(): void
+    {
+        Song::factory()->createMany(5);
+
+        self::assertSame(5, Song::deleteByChunk(Song::query()->get()->modelKeys(), 1));
+        self::assertSame(0, Song::query()->count());
+    }
+
+    #[Test]
+    public function deletingWhereValueNotInKeepsRowsExcludedByTheModifierWhenDeletingInChunks(): void
+    {
+        $episode = Song::factory()->asEpisode()->createOne();
+        Song::factory()->createMany(999);
+
+        Song::deleteWhereValueNotIn(
+            array_map(static fn (int $i) => "/missing/$i.mp3", range(1, 1_000)),
+            'path',
+            static fn (Builder $builder) => $builder->whereNull('podcast_id'),
+        );
+
+        self::assertSame([$episode->id], Song::query()->pluck('id')->all());
+    }
+
+    #[Test]
+    public function deletingWhereValueNotInKeepsRowsWithListedValuesWhenDeletingInChunks(): void
+    {
+        $kept = Song::factory()->createOne();
+        $deleted = Song::factory()->createOne();
+
+        $values = array_map(static fn (int $i) => "/missing/$i.mp3", range(1, 1_000));
+        $values[] = $kept->path;
+
+        self::assertSame(1, Song::deleteWhereValueNotIn($values, 'path'));
+        self::assertModelExists($kept);
+        self::assertModelMissing($deleted);
+    }
+
+    #[Test]
+    public function skipTheOwnerRoles(): void
+    {
+        $song = Song::factory()->createOne();
+
+        $loadedSong = Song::query()->findOrFail($song->id);
+
+        self::assertFalse($loadedSong->owner->relationLoaded('roles'));
+        self::assertFalse($loadedSong->owner->relationLoaded('permissions'));
+    }
+
+    #[Test]
+    public function songIsScrobbleable(): void
+    {
+        self::assertTrue(Song::factory()->createOne()->isScrobbleable());
+    }
+
+    #[Test]
+    public function episodeIsNotScrobbleable(): void
+    {
+        self::assertFalse(Song::factory()->asEpisode()->createOne()->isScrobbleable());
+    }
+
+    #[Test]
+    public function songByUnknownArtistIsNotScrobbleable(): void
+    {
+        $artist = Artist::factory()->createOne(['name' => Artist::UNKNOWN_NAME]);
+
+        self::assertFalse(Song::factory()->for($artist)->createOne()->isScrobbleable());
+    }
+
+    #[Test]
+    public function grantAccessToPublicSongsOfTheSameOrganizationOnly(): void
+    {
+        $user = create_user();
+        $songOfSameOrganization = Song::factory()->for(create_user(), 'owner')->public()->createOne();
+        $songOfOtherOrganization = Song::factory()
+            ->for(create_user(['organization_id' => Organization::factory()]), 'owner')
+            ->public()
+            ->createOne();
+
+        self::assertTrue($songOfSameOrganization->accessibleBy($user));
+        self::assertFalse($songOfOtherOrganization->accessibleBy($user));
+    }
+}

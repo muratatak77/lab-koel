@@ -1,0 +1,330 @@
+<?php
+
+namespace Tests\Integration\Services\License;
+
+use App\Enums\LicenseStatus as Status;
+use App\Exceptions\FailedToActivateLicenseException;
+use App\Http\Integrations\LemonSqueezy\Requests\ActivateLicenseRequest;
+use App\Http\Integrations\LemonSqueezy\Requests\DeactivateLicenseRequest;
+use App\Http\Integrations\LemonSqueezy\Requests\ValidateLicenseRequest;
+use App\Models\License;
+use App\Services\License\LicenseService;
+use App\Values\License\LicenseStatus;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Facades\Saloon;
+use Tests\TestCase;
+
+use function Tests\test_path;
+
+class LicenseServiceTest extends TestCase
+{
+    private LicenseService $service;
+
+    public function setUp(): void
+    {
+        parent::setUp();
+
+        $this->service = app(LicenseService::class);
+    }
+
+    #[Test]
+    public function activateLicense(): void
+    {
+        config(['lemonsqueezy.store_id' => 42]);
+        $key = '38b1460a-5104-4067-a91d-77b872934d51';
+
+        Saloon::fake([
+            ActivateLicenseRequest::class => MockResponse::make(body: File::get(test_path(
+                'fixtures/lemonsqueezy/license-activated-successful.json',
+            ))),
+        ]);
+
+        $license = $this->service->activate($key);
+
+        self::assertSame($key, $license->key);
+        self::assertNotEmpty($license->instance);
+        self::assertSame('Luke Skywalker', $license->meta->customerName);
+        self::assertSame('luke@skywalker.com', $license->meta->customerEmail);
+
+        /** @var LicenseStatus $cachedLicenseStatus */
+        $cachedLicenseStatus = Cache::get('license_status');
+
+        self::assertSame($license->key, $cachedLicenseStatus->license->key);
+        self::assertTrue($cachedLicenseStatus->isValid());
+
+        Saloon::assertSent(static function (ActivateLicenseRequest $request) use ($key): bool {
+            self::assertSame(
+                [
+                    'license_key' => $key,
+                    'instance_name' => 'Koel Plus',
+                ],
+                $request->body()->all(),
+            );
+
+            return true;
+        });
+    }
+
+    #[Test]
+    public function activateLicenseFailsBecauseOfIncorrectStoreId(): void
+    {
+        $this->expectException(FailedToActivateLicenseException::class);
+        $this->expectExceptionMessage('This license key is not from Koel’s official store.');
+
+        config(['lemonsqueezy.store_id' => 43]);
+        $key = '38b1460a-5104-4067-a91d-77b872934d51';
+
+        Saloon::fake([
+            ActivateLicenseRequest::class => MockResponse::make(body: File::get(test_path(
+                'fixtures/lemonsqueezy/license-activated-successful.json',
+            ))),
+        ]);
+
+        $this->service->activate($key);
+    }
+
+    #[Test]
+    public function activateLicenseFailsForInvalidLicenseKey(): void
+    {
+        $this->expectException(FailedToActivateLicenseException::class);
+        $this->expectExceptionMessage('license_key not found');
+
+        Saloon::fake([
+            ActivateLicenseRequest::class => MockResponse::make(
+                body: File::get(test_path('fixtures/lemonsqueezy/license-invalid.json')),
+                status: Response::HTTP_NOT_FOUND,
+            ),
+        ]);
+
+        $this->service->activate('invalid-key');
+    }
+
+    #[Test]
+    public function deactivateLicense(): void
+    {
+        $license = License::factory()->createOne();
+
+        Saloon::fake([
+            DeactivateLicenseRequest::class => MockResponse::make(
+                body: File::get(test_path('fixtures/lemonsqueezy/license-deactivated-successful.json')),
+                status: Response::HTTP_NOT_FOUND,
+            ),
+        ]);
+
+        $this->service->deactivate($license);
+
+        $this->assertModelMissing($license);
+        self::assertFalse(Cache::has('license_status'));
+
+        Saloon::assertSent(static function (DeactivateLicenseRequest $request) use ($license): bool {
+            self::assertSame(
+                [
+                    'license_key' => $license->key,
+                    'instance_id' => $license->instance->id,
+                ],
+                $request->body()->all(),
+            );
+
+            return true;
+        });
+    }
+
+    #[Test]
+    public function deactivateLicenseHandlesLeftoverRecords(): void
+    {
+        $license = License::factory()->createOne();
+        Saloon::fake([DeactivateLicenseRequest::class => MockResponse::make(status: Response::HTTP_NOT_FOUND)]);
+
+        $this->service->deactivate($license);
+
+        $this->assertModelMissing($license);
+    }
+
+    #[Test]
+    public function deactivateLicenseFails(): void
+    {
+        $this->expectExceptionMessage('Unprocessable Entity (422) Response: Something went horrible wrong');
+        $license = License::factory()->createOne();
+
+        Saloon::fake([
+            DeactivateLicenseRequest::class => MockResponse::make(
+                body: 'Something went horrible wrong',
+                status: Response::HTTP_UNPROCESSABLE_ENTITY,
+            ),
+        ]);
+
+        $this->service->deactivate($license);
+    }
+
+    #[Test]
+    public function getLicenseStatusFromCache(): void
+    {
+        Saloon::fake([]);
+        $license = License::factory()->createOne();
+
+        Cache::put('license_status', LicenseStatus::valid($license));
+
+        self::assertTrue($this->service->getStatus()->license->is($license));
+        self::assertTrue($this->service->getStatus()->isValid());
+
+        Saloon::assertNothingSent();
+    }
+
+    #[Test]
+    public function getLicenseStatusWithNoLicenses(): void
+    {
+        Saloon::fake([]);
+        License::query()->delete();
+
+        self::assertTrue($this->service->getStatus()->hasNoLicense());
+        Saloon::assertNothingSent();
+    }
+
+    #[Test]
+    public function getLicenseStatusValidatesWithApi(): void
+    {
+        $license = License::factory()->createOne();
+
+        self::assertFalse(Cache::has('license_status'));
+
+        Saloon::fake([
+            ValidateLicenseRequest::class => MockResponse::make(body: File::get(test_path(
+                'fixtures/lemonsqueezy/license-validated-successful.json',
+            ))),
+        ]);
+
+        self::assertTrue($this->service->getStatus()->isValid());
+        self::assertTrue(Cache::has('license_status'));
+
+        Saloon::assertSent(static function (ValidateLicenseRequest $request) use ($license): bool {
+            self::assertSame(
+                [
+                    'license_key' => $license->key,
+                    'instance_id' => $license->instance->id,
+                ],
+                $request->body()->all(),
+            );
+
+            return true;
+        });
+    }
+
+    #[Test]
+    public function getLicenseStatusValidatesWithApiWithInvalidLicense(): void
+    {
+        License::factory()->createOne();
+
+        self::assertFalse(Cache::has('license_status'));
+
+        Saloon::fake([ValidateLicenseRequest::class => MockResponse::make(status: Response::HTTP_NOT_FOUND)]);
+
+        self::assertFalse($this->service->getStatus()->isValid());
+        self::assertTrue(Cache::has('license_status'));
+    }
+
+    #[Test]
+    #[DataProvider('provideInconclusiveResponseStatuses')]
+    public function getLicenseStatusIsUnknownWhenValidationCannotConclude(int $responseStatus): void
+    {
+        $license = License::factory()->createOne();
+
+        Saloon::fake([ValidateLicenseRequest::class => MockResponse::make(status: $responseStatus)]);
+
+        $status = $this->service->getStatus();
+
+        self::assertSame(Status::UNKNOWN, $status->status);
+        self::assertTrue($status->license->is($license));
+    }
+
+    #[Test]
+    public function getLicenseStatusCachesAnUnknownStatusOnlyBriefly(): void
+    {
+        License::factory()->createOne();
+
+        Saloon::fake([
+            ValidateLicenseRequest::class => MockResponse::make(status: Response::HTTP_SERVICE_UNAVAILABLE),
+        ]);
+
+        $this->service->getStatus();
+        $this->service->getStatus();
+
+        Saloon::assertSentCount(1);
+
+        $this->travel(16)->minutes();
+        app(LicenseService::class)->getStatus();
+
+        Saloon::assertSentCount(2);
+    }
+
+    #[Test]
+    public function getLicenseStatusResolvesOnlyOnce(): void
+    {
+        $this->service->getStatus();
+
+        DB::enableQueryLog();
+        $this->service->getStatus();
+
+        self::assertEmpty(DB::getQueryLog());
+    }
+
+    #[Test]
+    public function activatingRefreshesTheResolvedStatus(): void
+    {
+        config(['lemonsqueezy.store_id' => 42]);
+
+        Saloon::fake([
+            ActivateLicenseRequest::class => MockResponse::make(body: File::get(test_path(
+                'fixtures/lemonsqueezy/license-activated-successful.json',
+            ))),
+        ]);
+
+        self::assertFalse($this->service->isPlus());
+
+        $this->service->activate('38b1460a-5104-4067-a91d-77b872934d51');
+
+        self::assertTrue($this->service->isPlus());
+    }
+
+    #[Test]
+    public function deactivatingRefreshesTheResolvedStatus(): void
+    {
+        $license = License::factory()->createOne();
+        Cache::put('license_status', LicenseStatus::valid($license));
+        Saloon::fake([DeactivateLicenseRequest::class => MockResponse::make(status: Response::HTTP_NOT_FOUND)]);
+
+        self::assertTrue($this->service->isPlus());
+
+        $this->service->deactivate($license);
+
+        self::assertFalse($this->service->isPlus());
+    }
+
+    #[Test]
+    public function getLicenseStatusDoesNotCacheAFailureThatIsNotTheValidationService(): void
+    {
+        License::factory()->createOne();
+
+        Saloon::fake([ValidateLicenseRequest::class => MockResponse::make(body: '{"not":"a license"}')]);
+
+        self::assertSame(Status::UNKNOWN, $this->service->getStatus()->status);
+        self::assertFalse(Cache::has('license_status'));
+    }
+
+    /** @return array<array{int}> */
+    public static function provideInconclusiveResponseStatuses(): array
+    {
+        return [
+            [Response::HTTP_TOO_MANY_REQUESTS],
+            [Response::HTTP_INTERNAL_SERVER_ERROR],
+            [Response::HTTP_BAD_GATEWAY],
+            [Response::HTTP_SERVICE_UNAVAILABLE],
+            [Response::HTTP_GATEWAY_TIMEOUT],
+        ];
+    }
+}

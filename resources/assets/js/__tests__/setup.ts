@@ -1,0 +1,102 @@
+import vueSnapshotSerializer from 'jest-serializer-vue'
+import { afterAll, expect, vi } from 'vite-plus/test'
+import './shims/popover'
+import './shims/storage'
+import './shims/mediaSession'
+import './shims/nodeWebApis'
+
+declare global {
+  interface Window {
+    RUNNING_UNIT_TESTS?: boolean
+  }
+}
+
+expect.addSnapshotSerializer(vueSnapshotSerializer)
+
+afterAll(() => vi.dynamicImportSettled())
+
+globalThis.ResizeObserver =
+  globalThis.ResizeObserver ||
+  vi.fn().mockImplementation(function () {
+    return {
+      disconnect: vi.fn(),
+      observe: vi.fn(),
+      unobserve: vi.fn(),
+    }
+  })
+
+HTMLMediaElement.prototype.load = vi.fn()
+HTMLMediaElement.prototype.play = vi.fn()
+HTMLMediaElement.prototype.pause = vi.fn()
+
+HTMLDialogElement.prototype.show = vi.fn(function mock(this: HTMLDialogElement) {
+  this.open = true
+})
+
+HTMLDialogElement.prototype.showModal = vi.fn(function mock(this: HTMLDialogElement) {
+  this.open = true
+})
+
+HTMLDialogElement.prototype.close = vi.fn(function mock(this: HTMLDialogElement) {
+  this.open = false
+})
+
+window.KOEL = {
+  base_url: 'http://test/',
+  build: null,
+  is_demo: false,
+  pusher: { app_key: '', app_cluster: '' },
+  reverb: null,
+  branding: { name: 'Koel', logo: '', cover: '' },
+  gravatar: { url: 'https://www.gravatar.com/avatar', default: 'robohash' },
+  mailer_configured: true,
+  sso_providers: [],
+  accepted_audio_extensions: [],
+}
+window.RUNNING_UNIT_TESTS = true
+
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation(query => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
+})
+
+// Mock iframe's navigation API
+const iframeContentWindowMap = new WeakMap<HTMLIFrameElement, any>()
+
+Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+  configurable: true,
+  get(this: HTMLIFrameElement) {
+    if (!iframeContentWindowMap.has(this)) {
+      const stub = {
+        location: {
+          replace: vi.fn(),
+          assign: vi.fn(),
+          reload: vi.fn(),
+          href: '',
+        },
+        postMessage: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }
+      iframeContentWindowMap.set(this, stub)
+    }
+    return iframeContentWindowMap.get(this)
+  },
+})
+
+window.IntersectionObserver = vi.fn().mockImplementation(function () {
+  return {
+    observe: vi.fn(),
+    unobserve: vi.fn(),
+    disconnect: vi.fn(),
+  }
+})

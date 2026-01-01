@@ -1,0 +1,122 @@
+<?php
+
+namespace Tests\Unit\Models;
+
+use App\Models\Artist;
+use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+use function Tests\create_user;
+use function Tests\test_path;
+
+class ArtistTest extends TestCase
+{
+    #[Test]
+    public function existingArtistCanBeRetrievedUsingName(): void
+    {
+        $artist = Artist::factory()->createOne(['name' => 'Foo']);
+
+        self::assertTrue(Artist::getOrCreate($artist->user, 'Foo')->is($artist));
+    }
+
+    #[Test]
+    public function newArtistIsCreatedWithName(): void
+    {
+        self::assertNull(Artist::query()->where('name', 'Foo')->first());
+        self::assertSame('Foo', Artist::getOrCreate(create_user(), 'Foo')->name);
+    }
+
+    /** @return array<mixed> */
+    public static function provideEmptyNames(): array
+    {
+        return [
+            [''],
+            ['  '],
+            [null],
+            [false],
+        ];
+    }
+
+    #[DataProvider('provideEmptyNames')]
+    #[Test]
+    public function gettingArtistWithEmptyNameReturnsUnknownArtist($name): void
+    {
+        self::assertTrue(Artist::getOrCreate(create_user(), $name)->is_unknown);
+    }
+
+    #[Test]
+    public function artistsWithNameInUtf16EncodingAreRetrievedCorrectly(): void
+    {
+        $name = File::get(test_path('fixtures/utf16'));
+        $artist = Artist::getOrCreate(create_user(), $name);
+
+        self::assertTrue(Artist::getOrCreate($artist->user, $name)->is($artist));
+    }
+
+    #[Test]
+    public function nameAccessorIsNullSafe(): void
+    {
+        // Scout's database engine calls toSearchableArray() on a fresh model instance
+        // to introspect searchable columns; that read of $this->name hits the accessor
+        // with a null value.
+        self::assertSame(Artist::UNKNOWN_NAME, (new Artist())->name);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function provideVariousArtistsSpellings(): array
+    {
+        return [
+            'lower case' => ['various artists'],
+            'upper case' => ['VARIOUS ARTISTS'],
+            'padded' => ['  Various Artists '],
+            'VA' => ['VA'],
+            'va' => ['va'],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('provideVariousArtistsSpellings')]
+    public function variousArtistsSpellingsResolveToTheVariousArtist(string $name): void
+    {
+        $artist = Artist::getOrCreate(create_user(), $name);
+
+        self::assertSame(Artist::VARIOUS_NAME, $artist->name);
+        self::assertTrue($artist->is_various);
+    }
+
+    /** @return array<string, array{string, bool}> */
+    public static function provideSearchabilityData(): array
+    {
+        return [
+            'standard artist' => ['Metallica', true],
+            'Various Artists' => [Artist::VARIOUS_NAME, false],
+            'Unknown Artist' => [Artist::UNKNOWN_NAME, false],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('provideSearchabilityData')]
+    public function onlyStandardArtistsAreSearchable(string $name, bool $searchable): void
+    {
+        self::assertSame($searchable, Artist::factory()->createOne(['name' => $name])->shouldBeSearchable());
+    }
+
+    /** @return array<string, array{string, bool}> */
+    public static function provideIsStandardData(): array
+    {
+        return [
+            'standard artist' => ['Metallica', true],
+            'Various Artists' => [Artist::VARIOUS_NAME, false],
+            'Unknown Artist' => [Artist::UNKNOWN_NAME, false],
+        ];
+    }
+
+    #[Test]
+    #[DataProvider('provideIsStandardData')]
+    public function onlyArtistsOtherThanUnknownAndVariousAreStandard(string $name, bool $standard): void
+    {
+        self::assertSame($standard, Artist::factory()->createOne(['name' => $name])->is_standard);
+    }
+}

@@ -1,0 +1,159 @@
+<?php
+
+namespace App\Values\SmartPlaylist;
+
+use App\Builders\SongBuilder;
+use App\Enums\SmartPlaylistModel as Model;
+use App\Enums\SmartPlaylistOperator as Operator;
+use App\Values\SmartPlaylist\SmartPlaylistRule as Rule;
+use Carbon\Carbon;
+use Closure;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
+
+final class SmartPlaylistQueryModifier
+{
+    private static function resolveWhereMethod(Rule $rule, Operator $operator): string
+    {
+        return $rule->model->requiresRawQuery() || $rule->model->isText() ? 'whereRaw' : $operator->toWhereMethod();
+    }
+
+    public static function applyRule(Rule $rule, SongBuilder $query): void
+    {
+        $operator = $rule->operator;
+        $value = $rule->value;
+
+        // Dates are stored as timestamps, so a day-based rule becomes a range that runs to the end of its last day.
+        // For instance, "IS 2023-10-01" becomes "IS BETWEEN 2023-10-01 AND 2023-10-02."
+        if ($rule->model->isDate() && in_array($operator, [Operator::IS, Operator::IS_NOT], true)) {
+            $operator = $operator === Operator::IS ? Operator::IS_BETWEEN : Operator::IS_NOT_BETWEEN;
+            $value = [$value[0], $value[0]];
+        }
+
+        if ($rule->model->isDate() && $operator->takesTwoValues()) {
+            $value = [$value[0], Carbon::createFromFormat('Y-m-d', $value[1])->addDay()->format('Y-m-d')];
+        }
+
+        if ($rule->model->getManyToManyRelation()) {
+            // for a many-to-many relation (like genres), we need to use a subquery with "whereHas" or "whereDoesntHave"
+            $whereHasClause = $rule->operator->isNegative() ? 'whereDoesntHave' : 'whereHas';
+
+            // Also, since the inclusion logic has already been handled by "whereHas" and "whereDoesntHave", the
+            // negative operators should be converted to their positive counterparts (isNot becomes is,
+            // notContain becomes contains, isNotBetween becomes isBetween).
+            // This way, for example, "genre is not 'Rock'" will be translated to
+            // "whereDoesntHave genre where genre is 'Rock'".
+            $operator = match ($operator) {
+                Operator::IS_NOT => Operator::IS,
+                Operator::NOT_CONTAIN => Operator::CONTAINS,
+                Operator::IS_NOT_BETWEEN => Operator::IS_BETWEEN,
+                default => $operator,
+            };
+
+            $query->{$whereHasClause}($rule->model->getManyToManyRelation(), static function (Builder $subQuery) use (
+                $rule,
+                $operator,
+                $value,
+            ): void {
+                $subQuery->{self::resolveWhereMethod($rule, $operator)}(...self::generateParameters(
+                    $rule->model,
+                    $operator,
+                    $value,
+                ));
+            });
+        } elseif (self::matchesUnsetValues($rule, $operator)) {
+            $query->where(static function (SongBuilder $unsetOrMatchingQuery) use ($rule, $operator, $value): void {
+                $unsetOrMatchingQuery
+                    ->{self::resolveWhereMethod($rule, $operator)}(...self::generateParameters(
+                        $rule->model,
+                        $operator,
+                        $value,
+                    ))
+                    ->orWhereNull($rule->model->toColumnName());
+            });
+        } else {
+            $query->{self::resolveWhereMethod($rule, $operator)}(...self::generateParameters(
+                $rule->model,
+                $operator,
+                $value,
+            ));
+        }
+    }
+
+    private static function matchesUnsetValues(Rule $rule, Operator $operator): bool
+    {
+        return !$rule->model->requiresRawQuery() && ($operator->isNegative() || $operator === Operator::NOT_IN_LAST);
+    }
+
+    /** @inheritdoc */
+    private static function generateParameters(Model $model, Operator $operator, array $value): array
+    {
+        $column = $model->toColumnName();
+
+        $parameters = match (true) {
+            $model->isText() => self::generateRawParameters(
+                self::resolveCaseInsensitiveTextColumn($column, $operator),
+                $operator,
+                array_map(static fn (mixed $text): string => mb_strtolower((string) $text), $value),
+            ),
+            $model->requiresRawQuery() => self::generateRawParameters($column, $operator, $value),
+            default => self::generateEloquentParameters($column, $operator, $value),
+        };
+
+        return $parameters instanceof Closure ? $parameters() : $parameters;
+    }
+
+    private static function resolveCaseInsensitiveTextColumn(string $column, Operator $operator): string
+    {
+        return match (DB::getDriverName()) {
+            'mysql', 'mariadb' => $column,
+            'sqlite' => self::resolveSqliteIndexableCaseInsensitiveColumn($column, $operator),
+            default => "LOWER($column)",
+        };
+    }
+
+    private static function resolveSqliteIndexableCaseInsensitiveColumn(string $column, Operator $operator): string
+    {
+        $likeIsAlreadyCaseInsensitive = !in_array($operator, [Operator::IS, Operator::IS_NOT], true);
+
+        return $likeIsAlreadyCaseInsensitive ? $column : "$column COLLATE NOCASE";
+    }
+
+    /** @inheritdoc */
+    private static function generateRawParameters(string $column, Operator $operator, array $value): array|Closure
+    {
+        // For raw parameters like those for play count, we need to use raw SQL clauses (whereRaw).
+        // whereRaw() expects a string for the statement and an array of parameters for binding.
+        return match ($operator) {
+            Operator::BEGINS_WITH => ["$column LIKE ?", ["{$value[0]}%"]],
+            Operator::CONTAINS => ["$column LIKE ?", ["%{$value[0]}%"]],
+            Operator::ENDS_WITH => ["$column LIKE ?", ["%{$value[0]}"]],
+            Operator::IN_LAST => static fn () => ["$column >= ?", [now()->subDays($value[0])]],
+            Operator::IS => ["$column = ?", [$value[0]]],
+            Operator::IS_BETWEEN => ["$column BETWEEN ? AND ?", $value],
+            Operator::IS_GREATER_THAN => ["$column > ?", [$value[0]]],
+            Operator::IS_LESS_THAN => ["$column < ?", [$value[0]]],
+            Operator::IS_NOT => ["$column <> ?", [$value[0]]],
+            Operator::IS_NOT_BETWEEN => ["$column NOT BETWEEN ? AND ?", $value],
+            Operator::NOT_CONTAIN => ["$column NOT LIKE ?", ["%{$value[0]}%"]],
+            Operator::NOT_IN_LAST => static fn () => ["$column < ?", [now()->subDays($value[0])]],
+        };
+    }
+
+    private static function generateEloquentParameters(string $column, Operator $operator, array $value): array|Closure
+    {
+        return match ($operator) {
+            Operator::BEGINS_WITH => [$column, 'LIKE', "$value[0]%"],
+            Operator::ENDS_WITH => [$column, 'LIKE', "%$value[0]"],
+            Operator::IS => [$column, '=', $value[0]],
+            Operator::IS_NOT => [$column, '<>', $value[0]],
+            Operator::CONTAINS => [$column, 'LIKE', "%$value[0]%"],
+            Operator::NOT_CONTAIN => [$column, 'NOT LIKE', "%$value[0]%"],
+            Operator::IS_LESS_THAN => [$column, '<', $value[0]],
+            Operator::IS_GREATER_THAN => [$column, '>', $value[0]],
+            Operator::IS_BETWEEN, Operator::IS_NOT_BETWEEN => [$column, $value],
+            Operator::NOT_IN_LAST => static fn () => [$column, '<', now()->subDays($value[0])],
+            Operator::IN_LAST => static fn () => [$column, '>=', now()->subDays($value[0])],
+        };
+    }
+}

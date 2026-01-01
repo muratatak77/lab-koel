@@ -1,0 +1,147 @@
+<?php
+
+namespace App\Services\Integrations;
+
+use App\Http\Integrations\Lastfm\LastfmConnector;
+use App\Http\Integrations\Lastfm\Requests\GetAlbumInfoRequest;
+use App\Http\Integrations\Lastfm\Requests\GetArtistInfoRequest;
+use App\Http\Integrations\Lastfm\Requests\GetSessionKeyRequest;
+use App\Http\Integrations\Lastfm\Requests\ScrobbleRequest;
+use App\Http\Integrations\Lastfm\Requests\ToggleLoveTrackRequest;
+use App\Http\Integrations\Lastfm\Requests\UpdateNowPlayingRequest;
+use App\Models\Album;
+use App\Models\Artist;
+use App\Models\Song;
+use App\Models\User;
+use App\Repositories\UserRepository;
+use App\Services\Contracts\Encyclopedia;
+use App\Services\Contracts\Scrobbler;
+use App\Values\Album\AlbumInformation;
+use App\Values\Artist\ArtistInformation;
+use Generator;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
+use Illuminate\Support\Uri;
+use SensitiveParameter;
+
+class LastfmService implements Encyclopedia, Scrobbler
+{
+    public function __construct(
+        private readonly LastfmConnector $connector,
+        private readonly UserRepository $userRepository,
+    ) {}
+
+    /**
+     * Determine if our application is using Last.fm.
+     */
+    public static function used(): bool
+    {
+        return (bool) config('koel.services.lastfm.key');
+    }
+
+    /**
+     * Determine if Last.fm integration is enabled.
+     */
+    public static function enabled(): bool
+    {
+        return config('koel.services.lastfm.key') && config('koel.services.lastfm.secret');
+    }
+
+    public function getArtistInformation(Artist $artist): ?ArtistInformation
+    {
+        if (!$artist->is_standard) {
+            return null;
+        }
+
+        return rescue_if(static::enabled(), function () use ($artist): ?ArtistInformation {
+            $stored = Cache::store('encyclopedia')->remember(
+                cache_key('lastfm artist information', $artist->name),
+                now()->addMonth(),
+                fn (): ?array => $this->connector->send(new GetArtistInfoRequest($artist))->dto()?->toArray(),
+            );
+
+            return $stored ? ArtistInformation::make(...$stored) : null;
+        });
+    }
+
+    public function getAlbumInformation(Album $album): ?AlbumInformation
+    {
+        if (!$album->is_identifiable) {
+            return null;
+        }
+
+        return rescue_if(static::enabled(), function () use ($album): ?AlbumInformation {
+            $stored = Cache::store('encyclopedia')->remember(
+                cache_key('lastfm album information', $album->name, $album->artist->name),
+                now()->addMonth(),
+                fn (): ?array => $this->connector->send(new GetAlbumInfoRequest($album))->dto()?->toArray(),
+            );
+
+            return $stored ? AlbumInformation::make(...$stored) : null;
+        });
+    }
+
+    public function scrobble(Song $song, User $user, int $timestamp): void
+    {
+        rescue(fn () => $this->connector->send(new ScrobbleRequest($song, $user, $timestamp)));
+    }
+
+    public function toggleLoveTrack(Song $song, User $user, bool $love): void
+    {
+        rescue(fn () => $this->connector->send(new ToggleLoveTrackRequest($song, $user, $love)));
+    }
+
+    /**
+     * @param Collection<array-key, Song> $songs
+     */
+    public function batchToggleLoveTracks(Collection $songs, User $user, bool $love): void
+    {
+        $generatorCallback = static function () use ($songs, $user, $love): Generator {
+            foreach ($songs as $song) {
+                yield new ToggleLoveTrackRequest($song, $user, $love);
+            }
+        };
+
+        $this->connector->pool($generatorCallback)->send()->wait();
+    }
+
+    public function updateNowPlaying(Song $song, User $user): void
+    {
+        rescue(fn () => $this->connector->send(new UpdateNowPlayingRequest($song, $user)));
+    }
+
+    public function isConnected(User $user): bool
+    {
+        return static::enabled() && (bool) $user->preferences->lastFmSessionKey;
+    }
+
+    public function getSessionKey(#[SensitiveParameter] string $token): ?string
+    {
+        return object_get($this->connector->send(new GetSessionKeyRequest($token))->object(), 'session.key');
+    }
+
+    public function setUserSessionKey(User $user, ?string $sessionKey): void
+    {
+        $user->preferences->lastFmSessionKey = $sessionKey;
+        $user->save();
+    }
+
+    public function getAuthorizationUrl(User $user): string
+    {
+        $state = Str::random(40);
+        Cache::put(cache_key('lastfm connect state', $state), $user->id, now()->addMinutes(10));
+
+        return Uri::of('https://www.last.fm/api/auth/')->withQuery([
+            'api_key' => config('koel.services.lastfm.key'),
+            'cb' => route('lastfm.callback', ['state' => $state]),
+        ])->value();
+    }
+
+    public function pullUserFromConnectState(#[SensitiveParameter] string $state): ?User
+    {
+        $userId = Cache::pull(cache_key('lastfm connect state', $state));
+
+        return $userId ? $this->userRepository->findOne($userId) : null;
+    }
+}

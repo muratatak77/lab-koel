@@ -1,0 +1,56 @@
+<template>
+  <AlbumArtistInfo :mode="mode" data-testid="artist-info">
+    <template #header>{{ artist.name }}</template>
+
+    <template #art>
+      <ArtistThumbnail :entity="artist" class="group" />
+    </template>
+
+    <ParagraphSkeleton v-if="loading" role="status" aria-busy="true" aria-label="Loading" />
+
+    <div v-if="!loading && info?.bio" class="rich-text" v-html="info.bio.full" />
+
+    <template v-if="!loading && info?.url" #footer>
+      <a :href="info.url" rel="noopener" target="_blank">Source</a>
+    </template>
+  </AlbumArtistInfo>
+</template>
+
+<script lang="ts" setup>
+import { ref, toRefs, watch } from 'vue'
+import { encyclopediaService } from '@/services/encyclopediaService'
+import { useThirdPartyServices } from '@/composables/useThirdPartyServices'
+
+import ArtistThumbnail from '@/components/ui/album-artist/AlbumOrArtistThumbnail.vue'
+import AlbumArtistInfo from '@/components/ui/album-artist/AlbumOrArtistInfo.vue'
+import ParagraphSkeleton from '@/components/ui/ParagraphSkeleton.vue'
+
+const props = withDefaults(defineProps<{ artist: Artist; mode?: EncyclopediaDisplayMode }>(), { mode: 'aside' })
+const { artist, mode } = toRefs(props)
+
+const { useMusicBrainz, useLastfm, useSpotify } = useThirdPartyServices()
+
+const loading = ref(false)
+const info = ref<ArtistInfo | null>(null)
+
+watch(
+  [artist, () => artist.value.description],
+  async () => {
+    info.value = null
+
+    if (useMusicBrainz.value || useLastfm.value || useSpotify.value || artist.value.description) {
+      loading.value = true
+      info.value = await encyclopediaService.fetchForArtist(artist.value)
+      loading.value = false
+    }
+  },
+  { immediate: true },
+)
+</script>
+
+<style lang="postcss" scoped>
+@reference '@css/app.pcss';
+:deep(.play-icon) {
+  @apply scale-[3];
+}
+</style>

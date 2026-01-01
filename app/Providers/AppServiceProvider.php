@@ -1,0 +1,147 @@
+<?php
+
+namespace App\Providers;
+
+use App\Enums\Acl\Role;
+use App\Hooks\Action;
+use App\Hooks\HookRegistry;
+use App\Models\Album;
+use App\Models\Artist;
+use App\Models\Genre;
+use App\Models\Passkey;
+use App\Models\PersonalAccessToken;
+use App\Models\Playlist;
+use App\Models\Podcast;
+use App\Models\RadioStation;
+use App\Models\Song;
+use App\Models\User;
+use App\Services\Contracts\Encyclopedia;
+use App\Services\DotenvEditor;
+use App\Services\Geolocation\Contracts\GeolocationService;
+use App\Services\Geolocation\IPinfoService;
+use App\Services\Integrations\LastfmService;
+use App\Services\Integrations\MusicBrainzService;
+use App\Services\Integrations\NullEncyclopedia;
+use App\Services\Integrations\SpotifyService;
+use App\Services\License\Contracts\LicenseServiceInterface;
+use App\Services\License\LicenseService;
+use App\Services\Scanners\Contracts\ScannerCacheStrategy as ScannerCacheStrategyContract;
+use App\Services\Scanners\ScannerCacheStrategy;
+use App\Services\Scanners\ScannerNoCacheStrategy;
+use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Database\Schema\Builder;
+use Illuminate\Database\SQLiteConnection;
+use Illuminate\Foundation\DevCommands;
+use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+use Laravel\Passkeys\Passkeys;
+use Laravel\Sanctum\Sanctum;
+use SpotifyWebAPI\Session as SpotifySession;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot(Builder $schema, DatabaseManager $db): void
+    {
+        // Fix utf8mb4-related error starting from Laravel 5.4
+        $schema->defaultStringLength(191);
+
+        Model::preventLazyLoading(!app()->isProduction());
+
+        self::enableOnDeleteCascadeForSqliteConnections($db);
+
+        // disable wrapping JSON resource in a `data` key
+        JsonResource::withoutWrapping();
+
+        Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
+
+        DevCommands::register('vp dev', 'vite');
+
+        self::grantAllPermissionsToSuperAdminRole();
+
+        do_action(Action::APPLICATION_BOOTED);
+
+        $this->app->bind(SpotifySession::class, static function () {
+            return SpotifyService::enabled()
+                ? new SpotifySession(
+                    config('koel.services.spotify.client_id'),
+                    config('koel.services.spotify.client_secret'),
+                )
+                : null;
+        });
+
+        $this->app->bind(Encyclopedia::class, static function () {
+            // Prefer Last.fm over MusicBrainz, and fall back to a null encyclopedia.
+            if (LastfmService::enabled()) {
+                return app(LastfmService::class);
+            }
+
+            if (MusicBrainzService::enabled()) {
+                return app(MusicBrainzService::class);
+            }
+
+            return app(NullEncyclopedia::class);
+        });
+
+        $this->app->bind(LicenseServiceInterface::class, LicenseService::class);
+
+        $this->app->bind(ScannerCacheStrategyContract::class, static function () {
+            // Use a no-cache strategy for unit tests to ensure consistent results
+            return app()->runningUnitTests() ? app(ScannerNoCacheStrategy::class) : app(ScannerCacheStrategy::class);
+        });
+
+        Route::bind('genre', static function (string $value): ?Genre {
+            if ($value === Genre::NO_GENRE_PUBLIC_ID) {
+                return null;
+            }
+
+            return Genre::query()->where('public_id', $value)->firstOrFail();
+        });
+
+        Relation::morphMap([
+            'playable' => Song::class,
+            'album' => Album::class,
+            'artist' => Artist::class,
+            'podcast' => Podcast::class,
+            'radio-station' => RadioStation::class,
+            'playlist' => Playlist::class,
+        ]);
+
+        $this->app->bind(GeolocationService::class, static function (): GeolocationService {
+            return app(IPinfoService::class);
+        });
+
+        $this->app
+            ->when(DotenvEditor::class)
+            ->needs('$path')
+            ->give(static fn () => app()->environmentFilePath());
+    }
+
+    public function register(): void
+    {
+        $this->app->singleton(HookRegistry::class);
+
+        Passkeys::ignoreRoutes();
+        Passkeys::useUserModel(User::class);
+        Passkeys::usePasskeyModel(Passkey::class);
+
+        if (class_exists('Laravel\Tinker\TinkerServiceProvider')) {
+            $this->app->register('Laravel\Tinker\TinkerServiceProvider');
+        }
+    }
+
+    private static function enableOnDeleteCascadeForSqliteConnections(DatabaseManager $db): void
+    {
+        if ($db->connection() instanceof SQLiteConnection) {
+            $db->statement($db->raw('PRAGMA foreign_keys = ON')->getValue($db->getQueryGrammar()));
+        }
+    }
+
+    private static function grantAllPermissionsToSuperAdminRole(): void
+    {
+        Gate::after(static fn (User $user) => $user->hasRole(Role::ADMIN));
+    }
+}

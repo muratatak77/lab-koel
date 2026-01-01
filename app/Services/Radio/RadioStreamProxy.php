@@ -1,0 +1,117 @@
+<?php
+
+namespace App\Services\Radio;
+
+use App\Models\RadioStation;
+
+class RadioStreamProxy
+{
+    /**
+     * Extract the icy-metaint value from the response headers.
+     */
+    public function extractIcyMetaInt(array $headers): int
+    {
+        foreach ($headers as $header) {
+            if (stripos($header, 'icy-metaint:') === 0) {
+                return (int) trim(substr($header, strlen('icy-metaint:')));
+            }
+        }
+
+        return 0;
+    }
+
+    /**
+     * Proxy the stream without ICY metadata parsing.
+     *
+     * @param resource $stream
+     */
+    public function proxyRawStream($stream): void
+    {
+        while (!feof($stream) && !connection_aborted()) {
+            echo fread($stream, 8192);
+            flush();
+        }
+
+        fclose($stream);
+    }
+
+    /**
+     * Proxy the stream while extracting ICY metadata blocks.
+     *
+     * @param resource $stream
+     */
+    public function proxyWithMetadata($stream, RadioStation $station, int $icyMetaInt): void
+    {
+        $bytesUntilMeta = $icyMetaInt;
+
+        while (!feof($stream) && !connection_aborted()) {
+            $chunkSize = min($bytesUntilMeta, 8192);
+            $data = fread($stream, $chunkSize);
+
+            if ($data === false) {
+                break;
+            }
+
+            $bytesRead = strlen($data);
+            echo $data;
+            flush();
+            $bytesUntilMeta -= $bytesRead;
+
+            if ($bytesUntilMeta === 0) {
+                $this->processMetadataBlock($stream, $station);
+                $bytesUntilMeta = $icyMetaInt;
+            }
+        }
+
+        fclose($stream);
+    }
+
+    /**
+     * Read and process a single ICY metadata block from the stream.
+     *
+     * @param resource $stream
+     */
+    private function processMetadataBlock($stream, RadioStation $station): void
+    {
+        $lengthByte = fread($stream, 1);
+
+        if ($lengthByte === false || strlen($lengthByte) === 0) {
+            return;
+        }
+
+        $metadataLength = ord($lengthByte) * 16;
+
+        if ($metadataLength === 0) {
+            return;
+        }
+
+        $metadataBlock = self::readExactly($stream, $metadataLength);
+        $parsed = RadioStreamMetadata::parseIcyBlock($metadataBlock);
+
+        if ($parsed['stream_title'] !== null) {
+            RadioStreamMetadata::cache($station, $parsed['stream_title']);
+        }
+    }
+
+    /**
+     * Network streams can return fewer bytes than asked for, so keep reading until the length is met.
+     *
+     * @param resource $stream
+     */
+    private static function readExactly($stream, int $length): string
+    {
+        $data = '';
+
+        while (strlen($data) < $length && !feof($stream)) {
+            $chunk = fread($stream, $length - strlen($data));
+
+            if ($chunk === false) {
+                break;
+            }
+
+            $data .= $chunk;
+        }
+
+        return $data;
+    }
+}

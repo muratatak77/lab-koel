@@ -1,0 +1,88 @@
+<?php
+
+namespace Tests\Unit\Pipelines\Encyclopedia;
+
+use App\Http\Integrations\MusicBrainz\MusicBrainzConnector;
+use App\Http\Integrations\MusicBrainz\Requests\GetArtistUrlRelationshipsRequest;
+use App\Pipelines\Encyclopedia\GetArtistWikidataIdUsingMbid;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
+use PHPUnit\Framework\Attributes\Test;
+use Saloon\Http\Faking\MockResponse;
+use Saloon\Laravel\Facades\Saloon;
+use Tests\Concerns\TestsPipelines;
+use Tests\TestCase;
+
+use function Tests\test_path;
+
+class GetArtistWikidataIdUsingMbidTest extends TestCase
+{
+    use TestsPipelines;
+
+    #[Test]
+    public function getWikidataId(): void
+    {
+        $json = File::json(test_path('fixtures/musicbrainz/artist-rel-urls.json'));
+
+        Saloon::fake([
+            GetArtistUrlRelationshipsRequest::class => MockResponse::make(body: $json),
+        ]);
+
+        $mock = self::createNextClosureMock('Q461269');
+
+        (new GetArtistWikidataIdUsingMbid(app(MusicBrainzConnector::class)))('sample-mbid', $mock->next(...)); // @phpstan-ignore-line
+
+        Saloon::assertSent(static function (GetArtistUrlRelationshipsRequest $request): bool {
+            self::assertSame(['inc' => 'url-rels'], $request->query()->all());
+
+            return true;
+        });
+
+        self::assertSame(
+            'Q461269',
+            Cache::store('encyclopedia')->get(cache_key('artist wikidata id from mbid', 'sample-mbid')),
+        );
+    }
+
+    #[Test]
+    public function getFromCache(): void
+    {
+        Saloon::fake([]);
+
+        Cache::store('encyclopedia')->put(cache_key('artist wikidata id from mbid', 'sample-mbid'), 'Q461269');
+
+        $mock = self::createNextClosureMock('Q461269');
+
+        (new GetArtistWikidataIdUsingMbid(app(MusicBrainzConnector::class)))('sample-mbid', $mock->next(...)); // @phpstan-ignore-line
+
+        Saloon::assertNothingSent();
+    }
+
+    #[Test]
+    public function justPassOnIfMbidIsNull(): void
+    {
+        Saloon::fake([]);
+
+        $mock = self::createNextClosureMock(null);
+
+        (new GetArtistWikidataIdUsingMbid(app(MusicBrainzConnector::class)))(null, $mock->next(...)); // @phpstan-ignore-line
+
+        Saloon::assertNothingSent();
+    }
+
+    #[Test]
+    public function rememberAnArtistMusicBrainzDoesNotKnow(): void
+    {
+        Saloon::fake([
+            GetArtistUrlRelationshipsRequest::class => MockResponse::make(body: ['error' => 'Not Found'], status: 404),
+        ]);
+
+        $pipeline = new GetArtistWikidataIdUsingMbid(app(MusicBrainzConnector::class));
+
+        $pipeline('sample-mbid', self::createNextClosureMock(null)->next(...)); // @phpstan-ignore-line
+        $pipeline('sample-mbid', self::createNextClosureMock(null)->next(...)); // @phpstan-ignore-line
+
+        Saloon::assertSentCount(1);
+        self::assertTrue(Cache::store('encyclopedia')->has(cache_key('artist wikidata id from mbid', 'sample-mbid')));
+    }
+}
