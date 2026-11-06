@@ -97,6 +97,7 @@ use App\Http\Controllers\API\Settings\UpdateAiSettingsController;
 use App\Http\Controllers\API\Settings\UpdateBrandingController;
 use App\Http\Controllers\API\Settings\UpdateMediaPathController;
 use App\Http\Controllers\API\SongController;
+use App\Http\Controllers\API\SongNoteController;
 use App\Http\Controllers\API\SongSearchController;
 use App\Http\Controllers\API\ThemeController;
 use App\Http\Controllers\API\ToggleLikeSongController;
@@ -242,6 +243,10 @@ Route::prefix('api')
             Route::put('podcasts/{podcast}/rating', RatePodcastController::class)->where([
                 'podcast' => Uuid::REGEX,
             ])->middleware('podcasts.enabled');
+
+            Route::get('songs/{song}/note', [SongNoteController::class, 'show'])->where(['song' => Uuid::REGEX]);
+            Route::put('songs/{song}/note', [SongNoteController::class, 'update'])->where(['song' => Uuid::REGEX]);
+            Route::delete('songs/{song}/note', [SongNoteController::class, 'destroy'])->where(['song' => Uuid::REGEX]);
 
             Route::apiResource('playlist-folders', PlaylistFolderController::class);
             Route::apiResource('playlist-folders.playlists', PlaylistFolderPlaylistController::class)->except(
