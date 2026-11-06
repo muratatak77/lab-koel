@@ -22,6 +22,7 @@ export interface Modals {
   KOEL_PLUS: never
   MANAGE_MILKDROP_PRESETS: never
   PLAYLIST_COLLABORATION: { playlist: Playlist }
+  SONG_NOTE_FORM: { song: Song; note: SongNote | null }
   CREATE_THEME_FORM: never
   REORDER_HOME_BLOCKS: { blocks: { id: string; label: string }[] }
 }

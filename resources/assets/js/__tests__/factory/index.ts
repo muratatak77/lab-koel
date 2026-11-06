@@ -24,6 +24,7 @@ declare module 'factoria' {
       'smart-playlist-rule': SmartPlaylistRule
       'smart-playlist-rule-group': SmartPlaylistRuleGroup
       song: Song
+      'song-note': SongNote
       theme: Theme
       user: User
       'you-tube-video': YouTubeVideo

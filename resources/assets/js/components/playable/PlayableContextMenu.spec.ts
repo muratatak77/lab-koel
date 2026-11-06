@@ -9,6 +9,7 @@ import { eventBus } from '@/utils/eventBus'
 import { screen, waitFor } from '@testing-library/vue'
 import { downloadService } from '@/services/downloadService'
 import { playbackService } from '@/services/QueuePlaybackService'
+import { songNoteService } from '@/services/songNoteService'
 import { commonStore } from '@/stores/commonStore'
 import { playlistStore } from '@/stores/playlistStore'
 import { queueStore } from '@/stores/queueStore'
@@ -18,6 +19,7 @@ import Router from '@/router'
 import EditSongForm from '@/components/playable/EditSongForm.vue'
 import CreateEmbedForm from '@/components/embed/CreateEmbedForm.vue'
 import CreatePlaylistForm from '@/components/playlist/CreatePlaylistForm.vue'
+import SongNoteForm from '@/components/playable/SongNoteForm.vue'
 
 const openModalMock = vi.fn()
 
@@ -546,6 +548,40 @@ describe('playableContextMenu.vue', () => {
     await renderComponent(h.factory('song').make(3))
 
     expect(screen.queryByText('View on MusicBrainz')).toBeNull()
+  })
+
+  it('opens the note form with the existing note of a song', async () => {
+    const song = h.factory('song').make()
+    const note = h.factory('song-note').make({ song_id: song.id })
+    const fetchMock = h.mock(songNoteService, 'fetchNote').mockResolvedValue(note)
+
+    await renderComponent(song)
+    await h.user.click(screen.getByText('Note…'))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(song))
+    await assertOpenModal(openModalMock, SongNoteForm, { song, note })
+  })
+
+  it('opens an empty note form for a song without a note', async () => {
+    const song = h.factory('song').make()
+    h.mock(songNoteService, 'fetchNote').mockResolvedValue(null)
+
+    await renderComponent(song)
+    await h.user.click(screen.getByText('Note…'))
+
+    await assertOpenModal(openModalMock, SongNoteForm, { song, note: null })
+  })
+
+  it('does not have a note option for multiple songs', async () => {
+    await renderComponent(h.factory('song').make(2))
+
+    expect(screen.queryByText('Note…')).toBeNull()
+  })
+
+  it('does not have a note option for episodes', async () => {
+    await renderComponent(h.factory('episode').make())
+
+    expect(screen.queryByText('Note…')).toBeNull()
   })
 
   it('closes the menu after rating', async () => {

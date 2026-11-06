@@ -589,6 +589,15 @@ interface Interaction {
   play_count: number
 }
 
+interface SongNote {
+  readonly type: 'song-notes'
+  readonly id: number
+  readonly song_id: Song['id']
+  content: string
+  readonly created_at: string
+  readonly updated_at: string
+}
+
 interface Favorite {
   readonly type: 'favorites'
   readonly favoriteable_id: string

@@ -1,5 +1,5 @@
 ---
-description: Guide to browsing, searching, playing, editing, downloading, and sharing music through Koel's web interface.
+description: Guide to browsing, searching, playing, editing, taking notes on, downloading, and sharing music through Koel's web interface.
 ---
 
 # Using the Web Interface
@@ -87,6 +87,13 @@ A dialog will appear, allowing you to change the song's title, artist, album, ge
 <img loading="lazy" src="../assets/img/interface/edit-song.webp" alt="Edit song" style="width: 480px">
 
 You can also edit multiple songs at once, in which case the changes will be applied to all of them.
+
+## Song Notes
+
+To keep a note on a song, right-click on it and choose "Note…". Write anything you want to remember, like a favorite
+moment or where you first heard it, then click "Save".
+
+Notes are private: only you can see the notes you leave. To remove a note, open it again and click "Delete Note".
 
 ## Downloading Songs
 

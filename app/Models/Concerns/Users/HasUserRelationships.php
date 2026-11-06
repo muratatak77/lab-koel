@@ -9,6 +9,7 @@ use App\Models\PlaylistFolder;
 use App\Models\Podcast;
 use App\Models\PodcastUserPivot;
 use App\Models\RadioStation;
+use App\Models\SongNote;
 use App\Models\Theme;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -65,5 +66,10 @@ trait HasUserRelationships
     public function themes(): HasMany
     {
         return $this->hasMany(Theme::class);
+    }
+
+    public function songNotes(): HasMany
+    {
+        return $this->hasMany(SongNote::class);
     }
 }
